@@ -1,9 +1,11 @@
 """Recite API: upload a recitation of some ayahs, get every mistake back, word by word."""
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.db import close_pool, connection, migrate
@@ -40,6 +42,15 @@ async def validation_error(_: Request, exc: RequestValidationError):
     fields = {".".join(str(p) for p in e["loc"][1:]) or "body": e["msg"] for e in exc.errors()}
     first = next(iter(fields.items()))
     return JSONResponse({"error": f"{first[0]}: {first[1]}", "fields": fields}, status_code=400)
+
+
+STATIC = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/health")

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recite</title>
+<meta name="description" content="Recite from memory and get every skipped, wrong, repeated or out-of-order word marked, plus a daily revision plan.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%231e3a5f' stroke-width='2.4' stroke-linejoin='round'%3E%3Crect x='7' y='7' width='18' height='18'/%3E%3Crect x='7' y='7' width='18' height='18' transform='rotate(45 16 16)'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/app.js"></script>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-mark" viewBox="0 0 32 32"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><rect x="7" y="7" width="18" height="18"/><rect x="7" y="7" width="18" height="18" transform="rotate(45 16 16)"/><circle cx="16" cy="16" r="2.6" fill="currentColor" stroke="none"/></g></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></g></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></g></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-retry" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.5"/><path d="M4 4v4.5h4.5"/></g></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></g></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h11"/></g></symbol>
+</svg>
+
+<!-- ============ sign in ============ -->
+<main id="auth-view" class="auth" hidden>
+  <section class="auth-intro">
+    <div class="wordmark"><svg><use href="#i-mark"/></svg>Recite</div>
+    <div>
+      <h1>Recite from memory. See every word you missed.</h1>
+      <p>Record yourself reciting a passage. Recite listens, checks it against the Quran text word by word, and tells you what to revise and when.</p>
+      <ol class="auth-steps">
+        <li><span><b>Pick a passage</b> and recite it with the text hidden.</span></li>
+        <li><span><b>Get it checked in seconds:</b> skipped, wrong, repeated and out-of-order words are marked.</span></li>
+        <li><span><b>Revise what is slipping.</b> Each morning brings a short plan built from your own mistakes.</span></li>
+      </ol>
+    </div>
+    <figure class="auth-verse">
+      <div class="q" lang="ar">وَرَتِّلِ الْقُرْآنَ تَرْتِيلًا</div>
+      <figcaption class="cite">“And recite the Quran with measured recitation.” Al-Muzzammil 73:4</figcaption>
+    </figure>
+  </section>
+  <section class="auth-panel">
+    <div class="auth-card">
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" id="tab-login" aria-selected="true">Sign in</button>
+        <button class="tab" role="tab" id="tab-signup" aria-selected="false">Create account</button>
+      </div>
+      <form id="auth-form" class="auth-form" novalidate>
+        <label class="field" id="name-field" hidden><span>Name</span>
+          <input class="input" name="name" autocomplete="name" maxlength="60"></label>
+        <label class="field"><span>Email</span>
+          <input class="input" name="email" type="email" autocomplete="email" required></label>
+        <label class="field"><span>Password</span>
+          <input class="input" name="password" type="password" autocomplete="current-password" required minlength="8"></label>
+        <p class="error-text" id="auth-error" role="alert" hidden></p>
+        <button class="btn primary" id="auth-submit" type="submit">Sign in</button>
+      </form>
+      <p class="auth-foot">Your recordings stay on the server that runs Recite. Speech recognition runs locally; nothing is sent to an outside service.</p>
+    </div>
+  </section>
+</main>
+
+<!-- ============ app ============ -->
+<div id="app-view" hidden>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="wordmark"><svg><use href="#i-mark"/></svg>Recite</div>
+      <div class="who"><span class="who-name" id="who-name"></span>
+        <button class="btn ghost small" id="sign-out" title="Sign out"><svg><use href="#i-out"/></svg>Sign out</button></div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel" aria-labelledby="practice-h">
+      <h2 id="practice-h" class="sr-only">Practice</h2>
+      <div class="picker">
+        <label class="field"><span>Surah</span><select class="select" id="surah"></select></label>
+        <label class="field"><span>From ayah</span><select class="select num" id="from"></select></label>
+        <label class="field"><span>To ayah</span><select class="select num" id="to"></select></label>
+      </div>
+
+      <div id="result-head" hidden></div>
+
+      <div class="mushaf-wrap">
+        <div class="mushaf" id="mushaf" lang="ar"></div>
+        <div class="veil" id="veil" hidden>
+          <div class="veil-card">
+            <p>The text is hidden so you recite from memory.</p>
+            <button class="btn small" id="peek">Show text</button>
+          </div>
+        </div>
+      </div>
+      <div class="legend" id="legend" hidden>
+        <span><i class="k-wrong"></i>Wrong word, with what you said above it</span>
+        <span><i class="k-missed"></i>Missed</span>
+        <span><i class="k-moved"></i>Out of order</span>
+        <span><i class="k-extra"></i>Extra word</span>
+        <span><i class="k-repeat"></i>Repeated (hesitation)</span>
+      </div>
+      <details class="heard" id="heard" hidden><summary>What Recite heard</summary><p></p></details>
+
+      <!-- recorder: idle / recording / recorded -->
+      <div id="recorder">
+        <div class="recorder" id="rec-row">
+          <button class="rec-btn" id="rec-btn" aria-label="Start recording"><svg><use href="#i-mic"/></svg></button>
+          <div class="rec-main">
+            <div class="rec-title" id="rec-title">Record your recitation</div>
+            <div class="rec-sub" id="rec-sub">Pause briefly between ayahs. Up to 3 minutes.</div>
+            <div class="meter" id="meter" hidden></div>
+          </div>
+          <div class="rec-actions" id="rec-actions"></div>
+        </div>
+        <div class="recorder-foot">
+          <label class="toggle"><input type="checkbox" id="hide-text" checked> Hide the text while I recite</label>
+          <span><button class="upload-link" id="upload-btn">or upload an audio file</button>
+            <input type="file" id="file" accept="audio/*,.m4a,.webm,.ogg,.mp3,.wav" hidden></span>
+        </div>
+      </div>
+
+      <div class="steps" id="steps" hidden>
+        <span class="step" data-step="upload"><span class="dot"></span>Uploading</span><span class="step-sep"></span>
+        <span class="step" data-step="queued"><span class="dot"></span>Waiting for the listener</span><span class="step-sep"></span>
+        <span class="step" data-step="processing"><span class="dot"></span>Listening</span><span class="step-sep"></span>
+        <span class="step" data-step="done"><span class="dot"></span>Checked</span>
+      </div>
+      <div id="result-actions" class="result-actions" hidden>
+        <button class="btn primary" id="again"><svg><use href="#i-retry"/></svg>Recite again</button>
+        <button class="btn" id="next-passage">Next passage</button>
+      </div>
+    </section>
+
+    <aside class="side">
+      <section class="panel" aria-labelledby="plan-h">
+        <div class="panel-head"><h2 id="plan-h">Today’s revision</h2><span class="muted" id="plan-date"></span></div>
+        <div class="panel-body"><ul class="plan-list" id="plan"></ul></div>
+      </section>
+      <section class="panel" aria-labelledby="recent-h">
+        <div class="panel-head"><h2 id="recent-h">Recent checks</h2><span class="muted" id="recent-count"></span></div>
+        <div class="panel-body"><ul class="recent-list" id="recent"></ul></div>
+      </section>
+      <section class="panel" aria-labelledby="report-h">
+        <div class="panel-head"><h2 id="report-h">Progress report</h2></div>
+        <div class="panel-body">
+          <div class="report-row">
+            <button class="btn" id="report-btn"><svg><use href="#i-doc"/></svg>Make PDF, last 30 days</button>
+            <span class="status-chip" id="report-status"></span>
+          </div>
+          <p class="side-note">Accuracy over time, your most-missed words, and where each surah stands.</p>
+        </div>
+      </section>
+    </aside>
+  </main>
+  <footer class="site-foot">Quran text from the <a href="https://tanzil.net" rel="noopener">Tanzil Project</a> (CC BY 3.0). Speech recognition: Tarteel’s open whisper-base-ar-quran model, run locally.</footer>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>
