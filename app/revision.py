@@ -11,7 +11,8 @@ from psycopg import Connection
 from app.config import settings
 
 INTERVALS = [1, 3, 7, 14, 30, 60]
-PLAN_SIZE = 12  # ayahs per day: a plan you can finish beats a complete one
+PLAN_SIZE = 12      # due ayahs per day: a plan you can finish beats a complete one
+SHORT_SURAH = 10    # short surahs are revised whole, not one ayah at a time
 
 
 def today() -> date:
@@ -22,9 +23,12 @@ def next_interval(streak: int) -> int:
     return INTERVALS[min(streak, len(INTERVALS)) - 1] if streak > 0 else 1
 
 
-def record_check(conn: Connection, user_id: int, surah: int, ayah_results: list[dict], on: date | None = None) -> None:
-    """Update every checked ayah's schedule from one attempt's per-ayah results."""
-    on = on or today()
+def record_check(conn: Connection, user_id: int, surah: int, ayah_results: list[dict],
+                 at: datetime | None = None) -> None:
+    """Update every checked ayah's schedule from one attempt's per-ayah results.
+    `at` is when the check happened (now by default; the demo seed passes past times)."""
+    at = at or datetime.now(ZoneInfo(settings.timezone))
+    on = at.astimezone(ZoneInfo(settings.timezone)).date()
     for a in ayah_results:
         row = conn.execute(
             "SELECT streak FROM ayah_progress WHERE user_id = %s AND surah = %s AND ayah = %s",
@@ -35,13 +39,13 @@ def record_check(conn: Connection, user_id: int, surah: int, ayah_results: list[
         conn.execute(
             """INSERT INTO ayah_progress (user_id, surah, ayah, checks, streak, interval_days,
                                           last_checked_at, last_solid, last_mistakes, due_on)
-               VALUES (%(u)s, %(s)s, %(a)s, 1, %(streak)s, %(i)s, now(), %(solid)s, %(m)s, %(due)s)
+               VALUES (%(u)s, %(s)s, %(a)s, 1, %(streak)s, %(i)s, %(at)s, %(solid)s, %(m)s, %(due)s)
                ON CONFLICT (user_id, surah, ayah) DO UPDATE SET
                    checks = ayah_progress.checks + 1, streak = EXCLUDED.streak,
-                   interval_days = EXCLUDED.interval_days, last_checked_at = now(),
+                   interval_days = EXCLUDED.interval_days, last_checked_at = EXCLUDED.last_checked_at,
                    last_solid = EXCLUDED.last_solid, last_mistakes = EXCLUDED.last_mistakes,
                    due_on = EXCLUDED.due_on""",
-            {"u": user_id, "s": surah, "a": a["ayah"], "streak": streak, "i": interval,
+            {"u": user_id, "s": surah, "a": a["ayah"], "streak": streak, "i": interval, "at": at,
              "solid": a["solid"], "m": a["mistakes"] + a["repeats"], "due": on + timedelta(days=interval)},
         )
 
@@ -52,12 +56,15 @@ def _ranges(rows: list[dict], on: date) -> list[dict]:
     for r in sorted(rows, key=lambda r: (r["surah"], r["ayah"])):
         weak = not r["last_solid"]
         last = items[-1] if items else None
-        if last and last["surah"] == r["surah"] and last["ayah_to"] == r["ayah"] - 1:
-            last["ayah_to"] = r["ayah"]
+        whole = r["ayah_count"] <= SHORT_SURAH
+        if last and last["surah"] == r["surah"] and (whole or last["ayah_to"] == r["ayah"] - 1):
+            if not whole:
+                last["ayah_to"] = r["ayah"]
             last["overdue_days"] = max(last["overdue_days"], (on - r["due_on"]).days)
         else:
             last = {"surah": r["surah"], "surah_name": r["name_en"], "surah_name_ar": r["name_ar"],
-                    "ayah_from": r["ayah"], "ayah_to": r["ayah"], "weak_ayahs": [],
+                    "ayah_from": 1 if whole else r["ayah"], "ayah_to": r["ayah_count"] if whole else r["ayah"],
+                    "weak_ayahs": [],
                     "overdue_days": (on - r["due_on"]).days}
             items.append(last)
         if weak:
@@ -72,7 +79,7 @@ def _ranges(rows: list[dict], on: date) -> list[dict]:
 
 def build_plan(conn: Connection, user_id: int, on: date) -> list[dict]:
     rows = conn.execute(
-        """SELECT p.surah, p.ayah, p.due_on, p.last_solid, s.name_en, s.name_ar
+        """SELECT p.surah, p.ayah, p.due_on, p.last_solid, s.name_en, s.name_ar, s.ayah_count
            FROM ayah_progress p JOIN surahs s ON s.number = p.surah
            WHERE p.user_id = %s AND p.due_on <= %s
            ORDER BY p.last_solid, p.due_on, p.last_mistakes DESC

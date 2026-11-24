@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from croniter import croniter
 
 from app.config import settings
-from app.db import connection
+from app.db import close_pool, connection
 from app.revision import build_all_plans
 
 log = logging.getLogger("cron")
@@ -53,3 +53,4 @@ if __name__ == "__main__":
     name = sys.argv[1] if len(sys.argv) > 1 else "revision_plan"
     with connection() as c:
         print(f"{name}: {SCHEDULE[name][1](c)}")
+    close_pool()
