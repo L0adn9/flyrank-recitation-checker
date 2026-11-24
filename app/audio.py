@@ -61,20 +61,44 @@ def frame_levels(wav: Path) -> list[float]:
     return levels
 
 
+def recited_part(levels: list[float]) -> list[float]:
+    """The frames from the first sound to the last (anything within 40 dB of the speech level).
+    Silence before starting and after finishing says nothing about the pauses between ayahs, and a long
+    stretch of it (pressing stop late) would otherwise pull the threshold down below them."""
+    if len(levels) < 50:
+        return levels
+    loud = sorted(levels)[int(len(levels) * 0.95)] - 40
+    first = next(i for i, lv in enumerate(levels) if lv >= loud)
+    last = len(levels) - next(i for i, lv in enumerate(reversed(levels)) if lv >= loud)
+    part = levels[first:last]
+    return part if len(part) >= 50 else levels
+
+
+def threshold_for(levels: list[float], trim: bool = True) -> float:
+    """Loudness (dBFS) that separates speech from pause in this recording: 12 dB above its own noise floor
+    (the 10th percentile frame of the recited part), or halfway between floor and speech level when that
+    is lower. A recording with no loudness changes at all has no speech: then nothing is above it."""
+    ordered = sorted(recited_part(levels) if trim else levels)
+    floor = ordered[len(ordered) // 10]
+    peak = ordered[int(len(ordered) * 0.95)]
+    if peak - floor < 6:  # flat: silence or steady noise all the way through, no speech in it
+        return peak + 1
+    return min(floor + 12, (floor + peak) / 2)
+
+
 def speech_spans(levels: list[float], min_pause: float = 0.45, min_speech: float = 0.3,
-                 max_segment: float = 24.0) -> list[tuple[float, float]]:
+                 max_segment: float = 24.0, threshold: float | None = None) -> list[tuple[float, float]]:
     """(start, end) seconds of each phrase between pauses.
 
-    The loudness threshold adapts to the recording: 12 dB above its own noise floor (the 10th percentile
-    frame), so a quiet room, a noisy one, or a studio recording with reverb all work. A pause must last
-    min_pause: long enough to skip a breath inside an ayah, so segments are whole ayahs, which is what
-    the model was trained on (0.4-0.45 s scored 13/13 in scripts/eval.py; 0.35 s split ayahs at breaths
-    and longer, multi-ayah segments lost words). A phrase longer than max_segment is cut at its quietest moment."""
+    The loudness threshold adapts to the recording (threshold_for), so a quiet room, a noisy one, or a
+    studio recording with reverb all work. A pause must last min_pause: long enough to skip a breath
+    inside an ayah, so segments are whole ayahs, which is what the model was trained on (0.4-0.45 s
+    scored 13/13 in scripts/eval.py; 0.35 s split ayahs at breaths and longer, multi-ayah segments lost
+    words). A phrase longer than max_segment is cut at its quietest moment."""
     if not levels:
         return []
-    floor = sorted(levels)[len(levels) // 10]
-    peak = sorted(levels)[int(len(levels) * 0.95)]
-    threshold = min(floor + 12, (floor + peak) / 2)
+    if threshold is None:
+        threshold = threshold_for(levels)
     quiet = [lv < threshold for lv in levels]
     min_pause_f, min_speech_f, max_f = int(min_pause / FRAME), int(min_speech / FRAME), int(max_segment / FRAME)
 

@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.db import close_pool, connection, migrate
-from app.routes import attempts, auth, quran, reports, revision
+from app.routes import attempts, auth, live, quran, reports, revision
 from app.seed_quran import load_quran
 
 
@@ -30,6 +30,7 @@ app.include_router(quran.router)
 app.include_router(attempts.router)
 app.include_router(revision.router)
 app.include_router(reports.router)
+app.include_router(live.router)
 
 
 @app.exception_handler(HTTPException)

@@ -1,6 +1,9 @@
 """The core job: turn one uploaded recitation into a word-by-word result."""
+import hashlib
+import io
 import json
 import tempfile
+import wave
 from pathlib import Path
 
 from psycopg import Connection
@@ -99,3 +102,30 @@ def fail_attempt(attempt_id: int, message: str) -> None:
             (message, attempt_id),
         )
         conn.commit()
+
+
+def save_live_attempt(user_id: int, surah: int, ayah_from: int, ayah_to: int, pcm: bytes,
+                      phrases: list[str], seconds: float) -> int:
+    """A live check is already recognised when the person presses stop: store the audio (as WAV) and
+    its transcript, and score it right away. The transcript also goes into the cache, so uploading the
+    same recording later is instant."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(pcm)
+    data = buf.getvalue()
+    digest = hashlib.sha256(data).hexdigest()
+    path = settings.uploads_dir / digest
+    if not path.exists():
+        path.write_bytes(data)
+    t = Transcript(" ".join(phrases), phrases, seconds)
+    with connection() as conn:
+        attempt = conn.execute(
+            "INSERT INTO attempts (user_id, surah, ayah_from, ayah_to, audio_path, audio_sha256, status, live)"
+            " VALUES (%s, %s, %s, %s, %s, %s, 'processing', true) RETURNING *",
+            (user_id, surah, ayah_from, ayah_to, str(path), digest),
+        ).fetchone()
+        store_transcript(conn, digest, t)
+        score(conn, attempt, t, cache_hit=False)
+        conn.commit()
+    return attempt["id"]

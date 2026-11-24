@@ -29,9 +29,12 @@ def _sub_cost(a: str, b: str) -> float:
     return SUB_SIMILAR if SequenceMatcher(a=a, b=b).ratio() >= 0.6 else SUB
 
 
-def edit_ops(exp: list[str], heard: list[str]) -> list[tuple[str, int, int]]:
+def edit_ops(exp: list[str], heard: list[str], prefix: bool = False) -> list[tuple[str, int, int]]:
     """Return [(op, i, j)] with op in match/sub/del/ins/swap; i indexes exp, j indexes heard
-    (-1 when not applicable). For 'swap', i and j are the first of the two transposed words."""
+    (-1 when not applicable). For 'swap', i and j are the first of the two transposed words.
+
+    With prefix=True the reciter is still going: heard is aligned against the best-fitting start of
+    exp, and the expected words after that are left out of the ops (not yet recited, not missed)."""
     n, m = len(exp), len(heard)
     inf = float("inf")
     d = [[inf] * (m + 1) for _ in range(n + 1)]
@@ -54,6 +57,8 @@ def edit_ops(exp: list[str], heard: list[str]) -> list[tuple[str, int, int]]:
 
     ops: list[tuple[str, int, int]] = []
     i, j, eps = n, m, 1e-9
+    if prefix:  # cheapest end point; on a tie the furthest one (a skipped word is likelier than an extra)
+        i = min(range(n + 1), key=lambda k: (d[k][m], -k))
     while i or j:
         here = d[i][j]
         if i and j and exp[i - 1] == heard[j - 1] and abs(here - d[i - 1][j - 1]) < eps:
@@ -91,6 +96,32 @@ def strip_restarts(heard: list[str], exp: list[str], max_len: int = 12) -> tuple
     return out, restarts
 
 
+def _reached(ops: list[tuple[str, int, int]]) -> int:
+    return max((i + (op == "swap") for op, i, _ in ops if i >= 0), default=-1)
+
+
+def _skip_ahead(exp: list[str], heard: list[str], ops: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
+    """Live: after a skipped passage, the words said next are counted as extras until more of them have
+    been said than were skipped (inserting is cheaper than deleting a long run). If the trailing extras
+    (two or more words) appear further on in the text, align up to there instead, so the skipped words
+    show as missed straight away."""
+    tail = 0
+    for op, _, _ in reversed(ops):
+        if op != "ins":
+            break
+        tail += 1
+    if tail < 2:
+        return ops
+    run = heard[len(heard) - tail:]
+    reached = _reached(ops)
+    if exp[max(0, reached - tail + 1): reached + 1] == run:  # said again: a repeat, not a jump
+        return ops
+    for q in range(reached + 1, len(exp) - 1):
+        if exp[q:q + 2] == run[:2]:
+            return edit_ops(exp[:min(len(exp), q + tail)], heard)
+    return ops
+
+
 def _runs(indices: list[int]) -> list[list[int]]:
     runs: list[list[int]] = []
     for k in indices:
@@ -101,15 +132,23 @@ def _runs(indices: list[int]) -> list[list[int]]:
     return runs
 
 
-def align(expected: list[Word], heard: list[str]) -> dict:
+def align(expected: list[Word], heard: list[str], prefix: bool = False) -> dict:
+    """prefix=True is for live checking while the reciter is still going: expected words past the
+    point they have reached get status 'pending' instead of 'missed', and 'reached' is the index of
+    the last expected word they got to (-1 before the first)."""
     exp = [w.norm for w in expected]
     said = heard
     heard, restarts = strip_restarts(heard, exp)
-    words = [{"i": w.i, "ayah": w.ayah, "text": w.text, "status": "correct"} for w in expected]
+    ops = edit_ops(exp, heard, prefix)
+    if prefix:
+        ops = _skip_ahead(exp, heard, ops)
+    reached = _reached(ops) if prefix else len(exp) - 1
+    words = [{"i": w.i, "ayah": w.ayah, "text": w.text, "status": "correct" if w.i <= reached else "pending"}
+             for w in expected]
     inserts: list[tuple[int, int]] = []  # (after expected index, heard index)
     after_of = [-1] * len(heard)          # heard index -> expected index it sits at or after
     last = -1
-    for op, i, j in edit_ops(exp, heard):
+    for op, i, j in ops:
         if op == "match":
             last = i
         elif op == "sub":
@@ -172,6 +211,8 @@ def align(expected: list[Word], heard: list[str]) -> dict:
 
     ayahs: dict[int, dict] = {}
     for w in words:
+        if w["status"] == "pending":
+            continue
         s = ayahs.setdefault(w["ayah"], {"ayah": w["ayah"], "words": 0, "correct": 0, "mistakes": 0, "repeats": 0})
         s["words"] += 1
         if w["status"] == "correct":
@@ -195,4 +236,5 @@ def align(expected: list[Word], heard: list[str]) -> dict:
         "mistakes": sum(s["mistakes"] for s in ayahs.values()),
         "repeats": sum(s["repeats"] for s in ayahs.values()),
         "accuracy": round(correct / len(words), 4) if words else 0.0,
+        "reached": reached,
     }

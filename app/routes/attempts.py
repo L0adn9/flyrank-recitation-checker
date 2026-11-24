@@ -13,7 +13,7 @@ router = APIRouter(prefix="/attempts", tags=["attempts"])
 AUDIO_TYPES = {"video/webm", "video/ogg", "video/mp4", "application/octet-stream", ""}
 COLUMNS = ("a.id, a.surah, s.name_en AS surah_name, s.name_ar AS surah_name_ar, a.ayah_from, a.ayah_to, a.status,"
            " a.accuracy, a.word_count, a.mistake_count, a.cache_hit, a.recognition_seconds, a.error,"
-           " a.created_at, a.finished_at")
+           " a.live, a.created_at, a.finished_at")
 
 
 def _read_upload(audio: UploadFile) -> bytes:

@@ -135,3 +135,30 @@ def test_words_doubled_in_the_text_itself_are_not_hesitations():
     fajr = expected_words(89, [(21, "كَلَّا إِذَا دُكَّتِ الْأَرْضُ دَكًّا دَكًّا")])
     r = align(fajr, norm_words("كلا إذا دكت الأرض دكا دكا"))
     assert r["accuracy"] == 1.0 and r["extras"] == []
+
+
+# ---- live (prefix) alignment: the reciter is still going ----
+
+def test_prefix_leaves_the_rest_pending_not_missed():
+    r = align(EXP, said(1) + AYAH[2][:2], prefix=True)
+    st = statuses(r)
+    assert st[:9] == ["correct"] * 9 and set(st[9:]) == {"pending"}
+    assert r["reached"] == 8 and r["mistakes"] == 0
+
+
+def test_prefix_marks_a_skip_as_soon_as_the_next_words_come():
+    r = align(EXP, said(1) + AYAH[3][:2], prefix=True)
+    st = statuses(r)
+    assert st[7:12] == ["missed"] * 5 and st[12:14] == ["correct"] * 2 and st[14] == "pending"
+
+
+def test_prefix_wrong_word_inside_is_wrong():
+    heard = said(1)
+    heard[3] = "قال"
+    r = align(EXP, heard, prefix=True)
+    assert statuses(r)[3] == "wrong" and r["reached"] == 6
+
+
+def test_prefix_with_nothing_heard():
+    r = align(EXP, [], prefix=True)
+    assert set(statuses(r)) == {"pending"} and r["reached"] == -1

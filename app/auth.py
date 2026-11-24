@@ -39,13 +39,10 @@ def _unauthorized(message: str) -> HTTPException:
     return HTTPException(401, message, headers={"WWW-Authenticate": "Bearer"})
 
 
-def current_user(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> dict:
-    """Dependency for protected routes: a valid, unexpired token for a user that still exists."""
-    if creds is None or creds.scheme.lower() != "bearer":
-        raise _unauthorized("Sign in first: send 'Authorization: Bearer <token>'")
+def user_from_token(token: str) -> dict:
+    """The user a token belongs to, if it is valid, unexpired, and the user still exists."""
     try:
-        claims = jwt.decode(creds.credentials, settings.jwt_secret, algorithms=[ALGORITHM],
-                            options={"require": ["exp", "sub"]})
+        claims = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM], options={"require": ["exp", "sub"]})
         user_id = int(claims["sub"])
     except jwt.ExpiredSignatureError:
         raise _unauthorized("Your session expired. Please sign in again") from None
@@ -56,3 +53,10 @@ def current_user(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) 
     if user is None:
         raise _unauthorized("This account no longer exists")
     return user
+
+
+def current_user(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> dict:
+    """Dependency for protected routes: 'Authorization: Bearer <token>'."""
+    if creds is None or creds.scheme.lower() != "bearer":
+        raise _unauthorized("Sign in first: send 'Authorization: Bearer <token>'")
+    return user_from_token(creds.credentials)
