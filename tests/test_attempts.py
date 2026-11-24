@@ -39,3 +39,13 @@ def test_attempts_are_private_to_their_owner(client, fake):
     assert client.get("/attempts", headers=omar).json() == []
     assert client.delete(f"/attempts/{attempt_id}", headers=sara).status_code == 204
     assert client.get(f"/attempts/{attempt_id}", headers=sara).status_code == 404
+
+
+def test_segmentation_adapts_to_the_noise_floor():
+    from app.audio import FRAME, speech_spans
+    # 1 s speech, 0.6 s pause, 1 s speech, 0.2 s breath, 1 s speech, on a noisy floor (-50 dB) or a quiet one (-80 dB)
+    for floor in (-50.0, -80.0):
+        pattern = [-20.0] * 50 + [floor] * 30 + [-20.0] * 50 + [floor] * 10 + [-20.0] * 50
+        spans = speech_spans(pattern)
+        assert len(spans) == 2, floor  # split at the pause, not at the breath
+        assert abs(spans[0][1] - 50 * FRAME) < 1e-6

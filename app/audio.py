@@ -3,9 +3,14 @@
 Why split: whisper decodes 30-second windows. Decoding a whole surah in one pass merged words across
 windows and dropped phrases in our tests, while decoding each pause-separated phrase on its own was
 word-perfect. Reciters naturally pause at the end of each ayah, so pauses are good cut points.
+Pauses are found from the recording's own loudness, not a fixed dB value, because recordings differ:
+a phone in a quiet room, a laptop mic with a fan, a studio recitation with reverb.
 """
-import re
+import math
 import subprocess
+import sys
+import wave
+from array import array
 from pathlib import Path
 
 
@@ -36,39 +41,74 @@ def duration(wav: Path) -> float:
         raise AudioError("Could not read the length of this recording.") from None
 
 
-def speech_spans(wav: Path, total: float, noise_db: int = -35, min_pause: float = 0.45,
-                 min_speech: float = 0.35) -> list[tuple[float, float]]:
-    """Return (start, end) of each stretch of speech between pauses, using ffmpeg's silencedetect."""
-    r = subprocess.run(
-        ["ffmpeg", "-nostdin", "-i", str(wav), "-af", f"silencedetect=n={noise_db}dB:d={min_pause}", "-f", "null", "-"],
-        capture_output=True, text=True,
-    )
-    starts = [float(x) for x in re.findall(r"silence_start: (-?[\d.]+)", r.stderr)]
-    ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", r.stderr)]
-    spans, t = [], 0.0
-    for i, s in enumerate(starts):
-        s = max(0.0, s)
-        if s - t >= min_speech:
-            spans.append((t, s))
-        t = ends[i] if i < len(ends) else total
-    if total - t >= min_speech:
-        spans.append((t, total))
-    return spans
+FRAME = 0.02  # seconds per energy frame
 
 
-def split_at_pauses(wav: Path, out_dir: Path, max_segment: float = 28.0) -> list[Path]:
-    """Cut wav into one file per phrase (with a little padding). Phrases longer than max_segment
-    seconds are cut further so every piece fits in one whisper window."""
-    total = duration(wav)
-    spans = speech_spans(wav, total)
-    pieces: list[tuple[float, float]] = []
+def frame_levels(wav: Path) -> list[float]:
+    """Loudness of each 20 ms frame in dBFS, for a 16 kHz mono 16-bit WAV."""
+    with wave.open(str(wav), "rb") as w:
+        if w.getsampwidth() != 2 or w.getnchannels() != 1:
+            raise AudioError("Expected 16-bit mono audio")
+        n = int(w.getframerate() * FRAME)
+        samples = array("h", w.readframes(w.getnframes()))
+    if sys.byteorder == "big":
+        samples.byteswap()
+    levels = []
+    for i in range(0, len(samples) - n + 1, n):
+        chunk = samples[i:i + n]
+        rms = math.sqrt(sum(x * x for x in chunk) / n)
+        levels.append(20 * math.log10(rms / 32768) if rms > 0 else -100.0)
+    return levels
+
+
+def speech_spans(levels: list[float], min_pause: float = 0.45, min_speech: float = 0.3,
+                 max_segment: float = 24.0) -> list[tuple[float, float]]:
+    """(start, end) seconds of each phrase between pauses.
+
+    The loudness threshold adapts to the recording: 12 dB above its own noise floor (the 10th percentile
+    frame), so a quiet room, a noisy one, or a studio recording with reverb all work. A pause must last
+    min_pause: long enough to skip a breath inside an ayah, so segments are whole ayahs, which is what
+    the model was trained on (0.4-0.45 s scored 13/13 in scripts/eval.py; 0.35 s split ayahs at breaths
+    and longer, multi-ayah segments lost words). A phrase longer than max_segment is cut at its quietest moment."""
+    if not levels:
+        return []
+    floor = sorted(levels)[len(levels) // 10]
+    peak = sorted(levels)[int(len(levels) * 0.95)]
+    threshold = min(floor + 12, (floor + peak) / 2)
+    quiet = [lv < threshold for lv in levels]
+    min_pause_f, min_speech_f, max_f = int(min_pause / FRAME), int(min_speech / FRAME), int(max_segment / FRAME)
+
+    spans: list[tuple[int, int]] = []
+    start, run = None, 0
+    for i, q in enumerate(quiet + [True] * (min_pause_f + 1)):
+        if not q:
+            if start is None:
+                start = i
+            run = 0
+        else:
+            run += 1
+            if start is not None and run >= min_pause_f:
+                end = i - run + 1
+                if end - start >= min_speech_f:
+                    spans.append((start, end))
+                start = None
+
+    pieces: list[tuple[int, int]] = []
     for a, b in spans:
-        while b - a > max_segment:
-            pieces.append((a, a + max_segment))
-            a += max_segment
+        while b - a > max_f:
+            lo, hi = a + max_f // 2, a + max_f          # cut somewhere in the second half of the window
+            cut = min(range(lo, hi), key=lambda k: levels[k])
+            pieces.append((a, cut))
+            a = cut
         pieces.append((a, b))
+    return [(a * FRAME, b * FRAME) for a, b in pieces]
+
+
+def split_at_pauses(wav: Path, out_dir: Path) -> list[Path]:
+    """Cut wav into one file per phrase, with a little padding on each side."""
+    total = duration(wav)
     out = []
-    for n, (a, b) in enumerate(pieces):
+    for n, (a, b) in enumerate(speech_spans(frame_levels(wav))):
         seg = out_dir / f"seg{n:03d}.wav"
         subprocess.run(
             ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(wav),
