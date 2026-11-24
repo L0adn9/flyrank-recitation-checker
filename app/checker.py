@@ -10,6 +10,7 @@ from app.align import align
 from app.audio import AudioError, to_wav16k
 from app.config import settings
 from app.db import connection
+from app.revision import record_check
 from app.transcriber import Transcript, get_transcriber
 
 
@@ -51,6 +52,7 @@ def score(conn: Connection, attempt: dict, t: Transcript, cache_hit: bool) -> di
         (t.text, json.dumps(result, ensure_ascii=False), result["accuracy"], result["total"],
          result["mistakes"], cache_hit, round(t.seconds, 2), attempt["id"]),
     )
+    record_check(conn, attempt["user_id"], attempt["surah"], result["ayahs"])
     return result
 
 

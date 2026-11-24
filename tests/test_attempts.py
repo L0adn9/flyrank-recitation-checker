@@ -3,6 +3,8 @@ from tests.conftest import signup, silence_wav
 AL_FIL = ("ألم تر كيف فعل ربك بأصحاب الفيل ألم يجعل كيدهم في تضليل وأرسل عليهم طيرا أبابيل "
           "ترميهم بحجارة من سجيل فجعلهم كعصف مأكول")
 
+QURAYSH = "لإيلاف قريش إيلافهم رحلة الشتاء والصيف فليعبدوا رب هذا البيت الذي أطعمهم من جوع وآمنهم من خوف"
+
 
 def upload(client, headers, surah=105, a=1, b=5, data=None, ctype="audio/wav"):
     return client.post("/attempts", headers=headers,

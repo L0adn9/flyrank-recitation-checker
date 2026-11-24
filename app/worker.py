@@ -10,7 +10,7 @@ import time
 
 import psycopg
 
-from app import jobs
+from app import cron, jobs
 from app.audio import AudioError
 from app.checker import check_attempt, fail_attempt
 from app.config import settings
@@ -90,6 +90,7 @@ def main() -> None:
                 with connection() as conn:
                     if n := jobs.requeue_stale(conn):
                         log.warning("requeued %s stale job(s)", n)
+                cron.tick()
                 last_housekeeping = time.monotonic()
             while not stopping and run_one():
                 pass

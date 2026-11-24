@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.db import close_pool, connection, migrate
-from app.routes import attempts, auth, quran
+from app.routes import attempts, auth, quran, revision
 from app.seed_quran import load_quran
 
 
@@ -26,6 +26,7 @@ app = FastAPI(title="Recite", version="1.0", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(quran.router)
 app.include_router(attempts.router)
+app.include_router(revision.router)
 
 
 @app.exception_handler(HTTPException)
