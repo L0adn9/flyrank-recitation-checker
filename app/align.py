@@ -10,6 +10,11 @@
 3. Extras are then explained where possible:
    - repeat: the same words as just before (or just after) the spot, i.e. the reciter went back;
    - moved: the same words as a run that is missing elsewhere, i.e. ayahs or words swapped.
+
+Before aligning, immediate restarts ("A B C, B C D ...") are taken out of what was heard and kept
+as hesitations. Otherwise a repeat next to a real mistake lets the alignment smear both into a run
+of odd extras and wrong words. A doubled run is only treated as a restart when the text itself does
+not contain it doubled (some ayahs do repeat words, e.g. 89:21).
 """
 from difflib import SequenceMatcher
 
@@ -66,6 +71,26 @@ def edit_ops(exp: list[str], heard: list[str]) -> list[tuple[str, int, int]]:
     return ops
 
 
+def strip_restarts(heard: list[str], exp: list[str], max_len: int = 12) -> tuple[list[str], list[tuple[int, list[str]]]]:
+    """Remove immediately repeated runs. Returns (cleaned, [(index in cleaned of the word the repeat
+    follows, repeated words)])."""
+    exp_text = " " + " ".join(exp) + " "
+    out: list[str] = []
+    restarts: list[tuple[int, list[str]]] = []
+    j = 0
+    while j < len(heard):
+        for k in range(min(max_len, len(out), len(heard) - j), 0, -1):
+            run = heard[j:j + k]
+            if out[-k:] == run and f" {' '.join(run + run)} " not in exp_text:
+                restarts.append((len(out) - 1, run))
+                j += k
+                break
+        else:
+            out.append(heard[j])
+            j += 1
+    return out, restarts
+
+
 def _runs(indices: list[int]) -> list[list[int]]:
     runs: list[list[int]] = []
     for k in indices:
@@ -78,8 +103,11 @@ def _runs(indices: list[int]) -> list[list[int]]:
 
 def align(expected: list[Word], heard: list[str]) -> dict:
     exp = [w.norm for w in expected]
+    said = heard
+    heard, restarts = strip_restarts(heard, exp)
     words = [{"i": w.i, "ayah": w.ayah, "text": w.text, "status": "correct"} for w in expected]
     inserts: list[tuple[int, int]] = []  # (after expected index, heard index)
+    after_of = [-1] * len(heard)          # heard index -> expected index it sits at or after
     last = -1
     for op, i, j in edit_ops(exp, heard):
         if op == "match":
@@ -93,9 +121,14 @@ def align(expected: list[Word], heard: list[str]) -> dict:
             last = i
         elif op == "swap":
             words[i]["status"] = words[i + 1]["status"] = "moved"
+            after_of[j] = i + 1
+            after_of[j + 1] = i + 1
             last = i + 1
+            continue
         else:
             inserts.append((last, j))
+        if j >= 0:
+            after_of[j] = last
 
     # Group consecutive inserted heard words that sit at the same spot.
     extras: list[dict] = []
@@ -129,6 +162,10 @@ def align(expected: list[Word], heard: list[str]) -> dict:
         if e["words"] in (before, after):
             e["kind"] = "repeat"
 
+    for pos, run in restarts:
+        extras.append({"after": after_of[pos] if pos >= 0 else -1, "words": run, "kind": "repeat"})
+    extras.sort(key=lambda e: e["after"])
+
     for e in extras:
         a = e["after"]
         e["ayah"] = expected[a].ayah if a >= 0 else (expected[0].ayah if expected else None)
@@ -152,7 +189,7 @@ def align(expected: list[Word], heard: list[str]) -> dict:
         "words": words,
         "extras": extras,
         "ayahs": list(ayahs.values()),
-        "heard": heard,
+        "heard": said,
         "correct": correct,
         "total": len(words),
         "mistakes": sum(s["mistakes"] for s in ayahs.values()),

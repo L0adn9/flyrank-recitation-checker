@@ -112,3 +112,26 @@ def test_fatiha_keeps_its_basmala():
     heard = norm_words("بسم الله الرحمن الرحيم الحمد لله رب العالمين")
     assert len(fatiha) == 8
     assert align(fatiha, clean_heard(heard, fatiha))["accuracy"] == 1.0
+
+
+def test_repeat_next_to_a_wrong_ayah_is_kept_apart():
+    # Recited ayah 2 twice, then a different ayah (Quraysh 3) in place of ayah 3.
+    wrong_ayah = norm_words("فليعبدوا رب هذا البيت")
+    r = align(EXP, said(1, 2, 2) + wrong_ayah + said(4, 5))
+    assert [(e["kind"], e["ayah"]) for e in r["extras"]] == [("repeat", 2)]
+    assert [(w["ayah"], w["status"]) for w in r["words"] if w["status"] != "correct"] == [(3, "wrong")] * 4
+    assert r["correct"] == r["total"] - 4
+
+
+def test_restart_mid_ayah_is_one_hesitation():
+    a1 = said(1)  # الم تر كيف فعل ربك باصحاب الفيل
+    heard = a1[:4] + a1[2:4] + a1[4:] + said(2, 3, 4, 5)  # "... كيف فعل, كيف فعل ربك ..."
+    r = align(EXP, heard)
+    assert [(e["kind"], e["words"]) for e in r["extras"]] == [("repeat", ["كيف", "فعل"])]
+    assert r["accuracy"] == 1.0 and r["repeats"] == 1 and r["mistakes"] == 0
+
+
+def test_words_doubled_in_the_text_itself_are_not_hesitations():
+    fajr = expected_words(89, [(21, "كَلَّا إِذَا دُكَّتِ الْأَرْضُ دَكًّا دَكًّا")])
+    r = align(fajr, norm_words("كلا إذا دكت الأرض دكا دكا"))
+    assert r["accuracy"] == 1.0 and r["extras"] == []
