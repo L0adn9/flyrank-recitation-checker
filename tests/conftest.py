@@ -15,7 +15,7 @@ os.environ["DATABASE_URL"] = SERVER + "/recite_test"
 os.environ["JWT_SECRET"] = "test-secret-" + "x" * 40
 os.environ.setdefault("STORAGE_DIR", "/tmp/recite-test-storage")
 
-TABLES = "attempts, users"
+TABLES = "jobs, attempts, users"
 
 
 def _ensure_database():
@@ -63,3 +63,19 @@ def signup(client, email="sara@example.com", password="correct-horse", name="Sar
     r = client.post("/auth/signup", json={"email": email, "password": password, "name": name})
     assert r.status_code == 201, r.text
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+def run_jobs(ignore_backoff: bool = True) -> int:
+    """Run queued jobs like the worker would. With ignore_backoff, delayed retries run now."""
+    from app.db import connection
+    from app.worker import drain
+    total = 0
+    while True:
+        if ignore_backoff:
+            with connection() as conn:
+                conn.execute("UPDATE jobs SET run_at = now() WHERE status = 'queued'")
+                conn.commit()
+        n = drain()
+        total += n
+        if n == 0 or not ignore_backoff:
+            return total

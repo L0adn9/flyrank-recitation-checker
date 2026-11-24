@@ -1,10 +1,9 @@
 import hashlib
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 
-from app.audio import AudioError
+from app import jobs
 from app.auth import current_user
-from app.checker import check_attempt, fail_attempt
 from app.config import settings
 from app.db import connection
 
@@ -49,11 +48,14 @@ def get_owned(conn, attempt_id: int, user_id: int, full: bool = True) -> dict:
     return row
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=202)
 def create_attempt(
+    response: Response,
     surah: int = Form(), ayah_from: int = Form(), ayah_to: int = Form(),
     audio: UploadFile = File(), user: dict = Depends(current_user),
 ):
+    """Accept a recording and queue it. Speech recognition takes seconds, so it runs in the worker;
+    poll GET /attempts/{id} until status is 'done' or 'failed'."""
     data = _read_upload(audio)
     digest = hashlib.sha256(data).hexdigest()
     with connection() as conn:
@@ -66,12 +68,9 @@ def create_attempt(
             " VALUES (%s, %s, %s, %s, %s) RETURNING id",
             (user["id"], surah, ayah_from, ayah_to, str(path)),
         ).fetchone()["id"]
+        jobs.enqueue(conn, "check_attempt", {"attempt_id": attempt_id})
         conn.commit()
-    try:
-        check_attempt(attempt_id)
-    except AudioError as e:
-        fail_attempt(attempt_id, str(e))
-    with connection() as conn:
+        response.headers["Location"] = f"/attempts/{attempt_id}"
         return get_owned(conn, attempt_id, user["id"])
 
 
