@@ -25,21 +25,27 @@ def expected_for(conn, surah: int, ayah_from: int, ayah_to: int) -> list[quran.W
     return quran.expected_words(surah, [(r["ayah"], r["text"], r["text_uthmani"]) for r in rows])
 
 
-def cached_transcript(conn: Connection, sha256: str) -> Transcript | None:
+def cache_model(attempt: dict) -> str:
+    """The cache key's model part. The passage is in it, because the passage is the model's context:
+    the same recording checked against another passage is recognised again."""
+    return f"{get_transcriber().name} {attempt['surah']}:{attempt['ayah_from']}-{attempt['ayah_to']}"
+
+
+def cached_transcript(conn: Connection, attempt: dict) -> Transcript | None:
     """Look up the cache and count the hit. Returns None on a miss."""
     row = conn.execute(
         "UPDATE transcripts SET hits = hits + 1, last_hit_at = now()"
         " WHERE audio_sha256 = %s AND model = %s RETURNING text, segments",
-        (sha256, get_transcriber().name),
+        (attempt["audio_sha256"], cache_model(attempt)),
     ).fetchone()
     return Transcript(row["text"], row["segments"], 0.0) if row else None
 
 
-def store_transcript(conn: Connection, sha256: str, t: Transcript) -> None:
+def store_transcript(conn: Connection, attempt: dict, t: Transcript) -> None:
     conn.execute(
         "INSERT INTO transcripts (audio_sha256, model, text, segments, seconds) VALUES (%s, %s, %s, %s::jsonb, %s)"
         " ON CONFLICT (audio_sha256, model) DO NOTHING",
-        (sha256, get_transcriber().name, t.text, json.dumps(t.segments, ensure_ascii=False), t.seconds),
+        (attempt["audio_sha256"], cache_model(attempt), t.text, json.dumps(t.segments, ensure_ascii=False), t.seconds),
     )
 
 
@@ -61,7 +67,7 @@ def score(conn: Connection, attempt: dict, t: Transcript, cache_hit: bool) -> di
 
 def score_from_cache(conn: Connection, attempt: dict) -> bool:
     """Used by the API right after upload: if this exact recording was heard before, finish now."""
-    t = cached_transcript(conn, attempt["audio_sha256"])
+    t = cached_transcript(conn, attempt)
     if t is None:
         return False
     score(conn, attempt, t, cache_hit=True)
@@ -77,7 +83,8 @@ def check_attempt(attempt_id: int) -> dict:
         if a is None:  # deleted by its owner while queued
             conn.commit()
             return {}
-        t = cached_transcript(conn, a["audio_sha256"])
+        t = cached_transcript(conn, a)
+        expected = expected_for(conn, a["surah"], a["ayah_from"], a["ayah_to"])
         conn.commit()
     hit = t is not None
     if not hit:
@@ -86,10 +93,10 @@ def check_attempt(attempt_id: int) -> dict:
             seconds = to_wav16k(Path(a["audio_path"]), wav)
             if seconds > settings.max_audio_seconds:
                 raise AudioError(f"This recording is {seconds:.0f}s long; the limit is {settings.max_audio_seconds}s.")
-            t = get_transcriber().transcribe(wav)
+            t = get_transcriber().transcribe(wav, expected)
     with connection() as conn:
         if not hit:
-            store_transcript(conn, a["audio_sha256"], t)
+            store_transcript(conn, a, t)
         result = score(conn, a, t, cache_hit=hit)
         conn.commit()
     return result
@@ -125,7 +132,7 @@ def save_live_attempt(user_id: int, surah: int, ayah_from: int, ayah_to: int, pc
             " VALUES (%s, %s, %s, %s, %s, %s, 'processing', true) RETURNING *",
             (user_id, surah, ayah_from, ayah_to, str(path), digest),
         ).fetchone()
-        store_transcript(conn, digest, t)
+        store_transcript(conn, attempt, t)
         score(conn, attempt, t, cache_hit=False)
         conn.commit()
     return attempt["id"]

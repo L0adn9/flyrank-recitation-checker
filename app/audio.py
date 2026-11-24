@@ -86,19 +86,58 @@ def threshold_for(levels: list[float], trim: bool = True) -> float:
     return min(floor + 12, (floor + peak) / 2)
 
 
+def speech_level(levels: list[float]) -> float:
+    """How loud the reciter's voice is: the 95th percentile frame of the recited part."""
+    part = sorted(recited_part(levels))
+    return part[int(len(part) * 0.95)] if part else -100.0
+
+
+def _recover(levels: list[float], spans: list[tuple[int, int]], voice: float) -> list[tuple[int, int]]:
+    """Speech quieter than the threshold: some reciters say the basmala 10 dB softer than the rest, and in a
+    recording with short pauses the threshold ends up above it. Stretches outside the phrases that stay
+    12 dB over the real noise floor (3rd percentile) for 1.2 s or more, and reach within 15 dB of the
+    voice, are phrases too. (Measured on 150 recordings with known ayah boundaries: no ayah lost, instead
+    of 4, for 12 more splits inside an ayah.)"""
+    o = sorted(recited_part(levels))
+    floor = o[len(o) * 3 // 100]
+    inside = [False] * len(levels)
+    for a, b in spans:
+        for i in range(a, min(len(levels), b)):
+            inside[i] = True
+    out, start, gap = list(spans), None, 0
+    for i in range(len(levels) + 20):
+        loud = i < len(levels) and not inside[i] and levels[i] >= floor + 12
+        if loud:
+            start = i if start is None else start
+            gap = 0
+        elif start is not None:
+            gap += 1
+            if gap >= 15 or (i < len(levels) and inside[i]):
+                end = i - gap + 1
+                if end - start >= 60 and max(levels[start:end]) >= voice - 15:
+                    out.append((start, end))
+                start, gap = None, 0
+    return sorted(out)
+
+
 def speech_spans(levels: list[float], min_pause: float = 0.45, min_speech: float = 0.3,
-                 max_segment: float = 24.0, threshold: float | None = None) -> list[tuple[float, float]]:
+                 max_segment: float = 24.0, threshold: float | None = None,
+                 voice: float | None = None, recover: bool = True) -> list[tuple[float, float]]:
     """(start, end) seconds of each phrase between pauses.
 
     The loudness threshold adapts to the recording (threshold_for), so a quiet room, a noisy one, or a
     studio recording with reverb all work. A pause must last min_pause: long enough to skip a breath
     inside an ayah, so segments are whole ayahs, which is what the model was trained on (0.4-0.45 s
     scored 13/13 in scripts/eval.py; 0.35 s split ayahs at breaths and longer, multi-ayah segments lost
-    words). A phrase longer than max_segment is cut at its quietest moment."""
+    words). A phrase longer than max_segment is cut at its quietest moment. A "phrase" whose loudest
+    moment stays 15 dB under the voice (speech_level, or `voice`) is a breath, a chair or a click, not
+    words: it is dropped, because the speech model would otherwise make up words for it."""
     if not levels:
         return []
     if threshold is None:
         threshold = threshold_for(levels)
+    if voice is None:
+        voice = speech_level(levels)
     quiet = [lv < threshold for lv in levels]
     min_pause_f, min_speech_f, max_f = int(min_pause / FRAME), int(min_speech / FRAME), int(max_segment / FRAME)
 
@@ -113,10 +152,12 @@ def speech_spans(levels: list[float], min_pause: float = 0.45, min_speech: float
             run += 1
             if start is not None and run >= min_pause_f:
                 end = i - run + 1
-                if end - start >= min_speech_f:
+                if end - start >= min_speech_f and max(levels[start:end]) >= voice - 15:
                     spans.append((start, end))
                 start = None
 
+    if recover:
+        spans = _recover(levels, spans, voice)
     pieces: list[tuple[int, int]] = []
     for a, b in spans:
         while b - a > max_f:

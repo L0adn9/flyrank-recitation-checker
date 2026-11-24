@@ -5,8 +5,9 @@ Protocol (JSON text messages, plus binary audio):
   server -> {"type": "ready", "max_seconds": 180, "words": [{"text": ..., "ayah": ...}]}
             the passage's words; progress statuses below are listed in this order
   client -> binary frames: 16 kHz mono 16-bit little-endian PCM, any size (the page sends ~100 ms)
-  server -> {"type": "progress", "words": [{"status": ..., "heard"?: ...}], "extras": [...], "next": k}
-            after every recognition pass; statuses as in a result, plus "current" and "pending"
+  server -> {"type": "progress", "words": [{"status": ..., "heard"?: ...}], "next": k}
+            after every recognition pass; statuses as in a result, plus "current" (being said) and
+            "pending" (not reached); wrong / missed only ever come from a finished phrase
   server -> {"type": "complete"} once the whole passage has been recited (the page then stops by itself)
   client -> {"type": "stop"}  (or {"type": "cancel"} to throw the recording away)
   server -> {"type": "result", "attempt": {...same as GET /attempts/{id}...}} and closes

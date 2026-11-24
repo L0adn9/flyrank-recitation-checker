@@ -6,21 +6,24 @@ as uploaded recordings (app/audio.py). It can only look backwards, so the loudne
 estimated from the audio so far; when a phrase ends, it is checked once more for pauses with the
 threshold known by then, which matters in the first seconds.
 
-- While a phrase is being said, it is re-recognised every few hundred milliseconds (a quick partial
-  pass), so the words light up as they are said.
-- When the reciter pauses, the phrase is closed and recognised once more with the full model window.
-  That final text replaces the partial one and never changes again.
+- While a phrase is being said, the fast model looks at it every few hundred milliseconds, so the
+  words light up as they are said. These quick looks only ever confirm words: the words they heard that
+  match the passage, in order from where the reciter is, are shown as said; anything else waits.
+- When the reciter pauses, the phrase is closed and decided: both models, the better fit kept
+  (app/transcriber.py, WhisperCpp.decide). Only this final text marks words wrong or missed, and it never
+  changes again, so marks do not flicker. The two run side by side, so the words of the next phrase
+  keep appearing while the last one is being judged.
 
-After every pass, everything heard so far is aligned against the start of the passage (align with
-prefix=True), and the client gets each word's status. The last word of a phrase that is still being
-said may be cut off mid-word, so it is never marked wrong: it shows as the current word until the
-phrase is finished.
+After every pass the client gets each word's status: correct / wrong / missed / moved from the final
+texts (aligned with the start of the passage, align prefix=True), then the words just confirmed by the
+quick look, 'current' for the word being said, 'pending' for the rest.
 
 On stop, the stored result is made the same way as for an upload of the same audio: the recording is
 cut with the whole recording's threshold, live phrases that were cut the same way are reused, and only
 the others are recognised again (usually none, so the result is there right away).
 """
 import asyncio
+import logging
 import math
 import sys
 import time
@@ -30,8 +33,10 @@ from dataclasses import dataclass
 
 from app import quran
 from app.align import align
-from app.audio import FRAME as FRAME_SECONDS, recited_part, speech_spans, threshold_for
+from app.audio import FRAME as FRAME_SECONDS, recited_part, speech_level, speech_spans, threshold_for
 from app.transcriber import Transcriber
+
+log = logging.getLogger("recite.live")
 
 RATE = 16000
 FRAME = 320                 # samples per 20 ms loudness frame
@@ -39,6 +44,7 @@ PAD = int(0.15 * RATE)      # audio kept on each side of a phrase
 MIN_PAUSE = 0.4             # seconds of quiet that end a phrase (uploads use 0.45; both scored 13/13 there,
                             # and live it is better to cut once too often than to merge two ayahs)
 MIN_SPEECH = 0.3            # shorter sounds are clicks or breaths, not words
+MIN_WORDS = 0.5             # live, phrases shorter than this are not sent to the models
 MAX_PHRASE = 24.0           # longer phrases are cut at their quietest moment
 PARTIAL_START = 0.5         # a phrase gets its first partial pass after this much audio
 PARTIAL_EVERY = 0.35        # and another one whenever this much new audio has arrived
@@ -49,8 +55,9 @@ PRIOR = [-60.0] * 15        # assumed quiet frames, so the first seconds are not
 class Phrase:
     start: int              # sample where the phrase starts
     end: int | None = None  # sample where it ends; None while it is still being said
-    text: str = ""
+    text: str = ""          # the accurate model's text, once final
     final: bool = False
+    partial: str = ""       # the fast model's latest look while it is being said
     partial_at: int = 0     # samples covered by the last partial pass
 
 
@@ -70,7 +77,8 @@ class LiveSession:
         self.complete_sent = False
         self.decode_seconds = 0.0
         self.redone = 0                     # phrases recognised again on stop
-        self._wake = asyncio.Event()
+        self._wake_final = asyncio.Event()
+        self._wake_partial = asyncio.Event()
 
     # ---------- audio in ----------
     @property
@@ -97,7 +105,11 @@ class LiveSession:
         self._update_threshold()
         for f in range(first, len(self.levels)):
             self._step(f)
-        self._wake.set()
+        self._wake()
+
+    def _wake(self) -> None:
+        self._wake_final.set()
+        self._wake_partial.set()
 
     def _update_threshold(self) -> None:
         """app.audio.threshold_for on the audio so far. Before any clear speech (or in the first second,
@@ -137,84 +149,98 @@ class LiveSession:
         i = self.phrases.index(p)
         f0 = p.start // FRAME
         pieces = speech_spans(self.levels[f0:end // FRAME], min_pause=MIN_PAUSE, min_speech=MIN_SPEECH,
-                              max_segment=MAX_PHRASE, threshold=self.threshold)
+                              max_segment=MAX_PHRASE, threshold=self.threshold, voice=speech_level(self.levels),
+                              recover=False)
         new = [Phrase(start=p.start + round(a / FRAME_SECONDS) * FRAME, end=p.start + round(b / FRAME_SECONDS) * FRAME)
                for a, b in pieces]
         if new:
-            new[0].text = p.text  # what was heard so far, until the final pass replaces it
+            new[0].partial = p.partial  # what was heard so far, until the final pass replaces it
         self.phrases[i:i + 1] = new
+        log.info("phrase %.2f-%.2f s closed: %d piece(s)", p.start / RATE, end / RATE, len(new))
 
     def finish(self) -> None:
         """No more audio: the phrase being said (if any) ends here."""
         if self.open is not None:
             self._close(self.samples)
         self.ended = True
-        self._wake.set()
+        self._wake()
 
     # ---------- recognition ----------
     def _audio(self, start: int, end: int) -> bytes:
         return bytes(self.pcm[max(0, start - PAD) * 2: min(self.samples, end + PAD) * 2])
 
-    def _next_job(self) -> tuple[Phrase, bool] | None:
-        for p in self.phrases:
-            if p.end is not None and not p.final:
-                return p, False
-        p = self.open
-        if p is not None and not self.ended:
-            said = self.samples - p.start
-            if said >= PARTIAL_START * RATE and self.samples - p.partial_at >= PARTIAL_EVERY * RATE:
-                return p, True
-        return None
-
     async def run(self) -> None:
         """Recognise phrases until finish() and the last phrase is final. Sends a progress message after
         each pass. Raises TranscriberError if recognition fails."""
+        await asyncio.gather(self._finals(), self._partials())
+
+    async def _finals(self) -> None:
+        """Closed phrases, in order, by the accurate model with the passage as context."""
         while True:
-            job = self._next_job()
-            if job is None:
-                if self.ended:
+            p = next((p for p in self.phrases if p.end is not None and not p.final), None)
+            if p is None:
+                if self.ended and self.open is None:
                     return
-                self._wake.clear()
-                await self._wake.wait()
+                self._wake_final.clear()
+                await self._wake_final.wait()
                 continue
-            p, partial = job
-            upto = self.samples if partial else p.end
             t0 = time.monotonic()
-            text = await self.transcriber.decode(self._audio(p.start, upto), partial=partial)
-            if partial:
-                p.partial_at = upto
-            else:
-                self.decode_seconds += time.monotonic() - t0
+            if p.end - p.start < MIN_WORDS * RATE:   # a click or a breath: not worth holding up the queue
                 p.final = True
-            p.text = text
+                continue
+            text = await self.transcriber.decide(self._audio(p.start, p.end), self.expected, self.heard())
+            self.decode_seconds += time.monotonic() - t0
+            p.text, p.final = text, True
+            log.info("phrase %.2f-%.2f s decided in %.1f s: %s", p.start / RATE, p.end / RATE,
+                     time.monotonic() - t0, text)
             await self.notify(self.progress())
             if not self.complete_sent and self.recited_all():
                 self.complete_sent = True
+                log.info("whole passage recited at %.1f s", self.seconds)
                 await self.notify({"type": "complete"})
 
+    async def _partials(self) -> None:
+        """Quick looks at the phrase being said, by the fast model."""
+        while not self.ended:
+            p = self.open
+            if p is None or self.samples - p.start < PARTIAL_START * RATE \
+                    or self.samples - p.partial_at < PARTIAL_EVERY * RATE:
+                self._wake_partial.clear()
+                await self._wake_partial.wait()
+                continue
+            upto = self.samples
+            p.partial = await self.transcriber.decode(self._audio(p.start, upto), partial=True)
+            p.partial_at = upto
+            if not p.final:
+                await self.notify(self.progress())
+
     # ---------- results ----------
-    def heard(self, finals_only: bool = False) -> list[str]:
-        text = " ".join(p.text for p in self.phrases if p.text and (p.final or not finals_only))
+    def heard(self) -> list[str]:
+        """What the accurate model heard so far (final phrases only), normalised."""
+        text = " ".join(p.text for p in self.phrases if p.final and p.text)
         return quran.clean_heard(quran.norm_words(text), self.expected)
 
     def progress(self) -> dict:
-        """Each expected word's status so far: correct / wrong / missed / moved, 'current' for the word
-        being said, 'pending' for words not reached yet."""
+        """Each expected word's status so far: correct / wrong / missed / moved from the final texts; then
+        the words the quick look confirmed (correct); 'current' for the word being said, 'pending' after."""
         r = align(self.expected, self.heard(), prefix=True)
-        words, extras = r["words"], r["extras"]
-        reached = r["reached"]
-        tentative = any(p.text and not p.final for p in self.phrases)
-        if tentative:
-            # The phrase being said may end mid-word: don't call its last word wrong yet, and don't show
-            # extras at the very end (most likely the start of a word that isn't finished).
-            if 0 <= reached and words[reached]["status"] == "wrong":
-                words[reached]["status"] = "current"
-            extras = [e for e in extras if e["after"] < reached]
+        words = r["words"]
+        at = r["reached"] + 1
+        quick = quran.norm_words(" ".join(p.partial for p in self.phrases if not p.final and p.partial))
+        if quick and at < len(self.expected):
+            # Confirm the words heard in order from where the reciter is; stop at the first that differs.
+            ahead = align(self.expected[at:], quick, prefix=True)["words"]
+            for w in ahead:
+                if w["status"] != "correct":
+                    break
+                words[at]["status"] = "correct"
+                at += 1
+        if at < len(words) and any(not p.final for p in self.phrases):
+            words[at]["status"] = "current"
         return {
             "type": "progress",
             "words": [{"status": w["status"], **({"heard": w["heard"]} if "heard" in w else {})} for w in words],
-            "extras": [{"after": e["after"], "words": e["words"], "kind": e["kind"]} for e in extras],
-            "next": reached + 1,
+            "next": at,
             "seconds": round(self.seconds, 1),
         }
 
@@ -223,7 +249,7 @@ class LiveSession:
         entirely (if one was, the reciter may still come back to it)."""
         if not self.expected:
             return False
-        r = align(self.expected, self.heard(finals_only=True), prefix=True)
+        r = align(self.expected, self.heard(), prefix=True)
         if r["reached"] != len(self.expected) - 1 or r["words"][-1]["status"] != "correct":
             return False
         by_ayah: dict[int, list[str]] = {}
@@ -232,20 +258,21 @@ class LiveSession:
         return not any(all(s == "missed" for s in st) for st in by_ayah.values())
 
     async def final_phrases(self) -> list[str]:
-        """The phrase texts for the stored result, cut exactly as an upload of this audio would be."""
+        """The phrase texts for the stored result, cut exactly as an upload of this audio would be. Live
+        phrases cut the same way are reused; the others are recognised again, in order, with context."""
         if not self.levels or not any(p.final for p in self.phrases):
             return []
         live = [(p.start // FRAME, p.end // FRAME, p.text) for p in self.phrases if p.final]
         spans = [(round(a / FRAME_SECONDS), round(b / FRAME_SECONDS)) for a, b in speech_spans(self.levels)]
-        texts: list[str | None] = [
-            next((t for la, lb, t in live if abs(la - fa) <= 5 and abs(lb - fb) <= 5), None) for fa, fb in spans]
-        redo = [k for k, t in enumerate(texts) if t is None]
-        if redo:
-            t0 = time.monotonic()
-            done = await asyncio.gather(*(self.transcriber.decode(self._audio(spans[k][0] * FRAME, spans[k][1] * FRAME))
-                                          for k in redo))
-            self.decode_seconds += time.monotonic() - t0
-            self.redone = len(redo)
-            for k, t in zip(redo, done):
-                texts[k] = t
-        return [t for t in texts if t]
+        texts: list[str] = []
+        for fa, fb in spans:
+            text = next((t for la, lb, t in live if abs(la - fa) <= 5 and abs(lb - fb) <= 5), None)
+            if text is None:
+                t0 = time.monotonic()
+                heard = quran.norm_words(" ".join(texts))
+                text = await self.transcriber.decide(self._audio(fa * FRAME, fb * FRAME), self.expected, heard)
+                self.decode_seconds += time.monotonic() - t0
+                self.redone += 1
+            if text:
+                texts.append(text)
+        return texts

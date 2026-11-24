@@ -162,3 +162,85 @@ def test_prefix_wrong_word_inside_is_wrong():
 def test_prefix_with_nothing_heard():
     r = align(EXP, [], prefix=True)
     assert set(statuses(r)) == {"pending"} and r["reached"] == -1
+
+
+# ---- what counts as the same word, and going back ----
+from app.align import close_enough  # noqa: E402
+from app.quran import match_key, plausible  # noqa: E402
+
+
+def key(text):
+    return match_key(norm_words(text)[0])
+
+
+def test_mushaf_and_modern_spelling_are_the_same_word():
+    assert key("ٱلْعَٰلَمِينَ") == key("العالمين")
+    assert key("ٱلرَّحْمَٰنِ") == key("الرحمن")
+    assert key("ذَٰلِكَ") == key("ذلك")
+    assert key("ٱلصَّلَوٰةَ") == key("الصلاة")
+
+
+def test_sound_alike_letters_do_not_make_a_word_wrong():
+    assert key("ٱلضَّآلِّينَ") == key("الظالين")
+    assert key("ٱلدِّينِ") == key("التين")
+
+
+def test_different_words_stay_different():
+    for a, b in [("قال", "قل"), ("عليهم", "إليهم"), ("الرحمن", "الرحيم")]:
+        assert key(a) != key(b) and not close_enough(key(a), key(b))
+    # first and last letters carry the word's form: يعلمون / تعلمون, عليه / عليهم
+    for a, b in [("يعلمون", "تعلمون"), ("عليهم", "عليه")]:
+        assert not close_enough(key(a), key(b))
+
+
+def test_a_word_heard_almost_right_is_right():
+    assert close_enough(key("ٱلْمَغْضُوبِ"), key("المخبوب"))          # one letter inside a long word
+    assert close_enough(key("ٱلرَّحْمَٰنِ"), key("ٱرْوَحْمَٰنِ"))         # "ar-rahman", as pronounced
+    assert close_enough(key("ٱلصِّرَٰطَ"), key("صِرَاطَ"))              # silent alef of "al" after a vowel
+
+
+def test_restart_heard_slightly_differently_is_a_repeat_not_a_mistake():
+    first_try = AYAH[3][:3]
+    first_try[1] = "عليم"                       # the first attempt was heard a little differently
+    r = align(EXP, said(1, 2) + first_try + said(3, 4, 5))
+    assert r["mistakes"] == 0 and r["accuracy"] == 1.0
+    assert [e["kind"] for e in r["extras"]] == ["repeat"]
+    assert all(a["solid"] for a in r["ayahs"])   # going back is not held against the ayah
+
+
+def test_going_back_several_words_is_a_repeat():
+    r = align(EXP, said(1, 2) + AYAH[1][3:] + said(3, 4, 5))   # back to the middle of ayah 1
+    assert r["mistakes"] == 0 and {e["kind"] for e in r["extras"]} == {"repeat"}
+
+
+def test_amin_after_al_fatiha_is_not_an_extra():
+    fatiha = expected_words(1, [(7, "صِرَاطَ الَّذِينَ أَنْعَمْتَ عَلَيْهِمْ غَيْرِ الْمَغْضُوبِ عَلَيْهِمْ وَلَا الضَّالِّينَ")])
+    heard = clean_heard(norm_words("صراط الذين انعمت عليهم غير المغضوب عليهم ولا الضالين آمين"), fatiha)
+    assert align(fatiha, heard)["extras"] == []
+
+
+def test_opening_letters_are_matched_however_they_are_written():
+    baqarah = expected_words(2, [(1, "بِسْمِ اللَّهِ الرَّحْمَـٰنِ الرَّحِيمِ الم"), (2, "ذَٰلِكَ الْكِتَابُ لَا رَيْبَ ۛ فِيهِ ۛ هُدًى لِّلْمُتَّقِينَ")])
+    heard = clean_heard(norm_words("فالفلمي ذلك الكتاب لا ريب فيه هدى للمتقين"), baqarah)
+    assert align(baqarah, heard)["accuracy"] == 1.0
+
+
+def test_made_up_text_is_rejected_by_its_length():
+    assert plausible("الحمد لله رب العالمين", 3.0)
+    assert not plausible("والله الرحمن الرحيم", 0.6)      # three words in an "amin"
+
+
+def test_recurring_short_words_are_not_taken_for_going_back():
+    ikhlas = expected_words(112, [(1, "بِسْمِ اللَّهِ الرَّحْمَـٰنِ الرَّحِيمِ قُلْ هُوَ اللَّهُ أَحَدٌ"), (2, "اللَّهُ الصَّمَدُ"),
+                                  (3, "لَمْ يَلِدْ وَلَمْ يُولَدْ"), (4, "وَلَمْ يَكُن لَّهُ كُفُوًا أَحَدٌ")])
+    r = align(ikhlas, norm_words("قل هو الله احد الله الصمد لم يلد ولم يولد ولم يكن له كفوا احد"))
+    assert r["accuracy"] == 1.0 and r["extras"] == []
+
+
+def test_aligning_part_of_a_passage():
+    """Live checking aligns what is being said against the rest of the passage (a slice whose words keep
+    their positions in the whole passage); a swapped pair there must not break anything."""
+    rest = EXP[7:]   # from ayah 2 on
+    r = align(rest, AYAH[3] + AYAH[2] + AYAH[4], prefix=True)
+    st = [w["status"] for w in r["words"]]
+    assert st[:5] == ["correct"] * 5 and st[5:9] == ["moved"] * 4   # ayah 2 said, ayah 3 out of order

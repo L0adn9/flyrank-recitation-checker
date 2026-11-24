@@ -1,4 +1,5 @@
 """Recite API: upload a recitation of some ayahs, get every mistake back, word by word."""
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,6 +24,9 @@ async def lifespan(_: FastAPI):
     yield
     close_pool()
 
+
+logging.basicConfig(format="%(levelname)s:     %(name)s: %(message)s")
+logging.getLogger("recite").setLevel(logging.INFO)
 
 app = FastAPI(title="Recite", version="1.0", lifespan=lifespan)
 app.include_router(auth.router)

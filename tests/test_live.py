@@ -26,8 +26,8 @@ def quiet(seconds: float) -> bytes:
 
 
 def recitation(phrases: int = 5) -> bytes:
-    """Lead-in silence, then one 1.2 s 'phrase' per ayah with 0.8 s pauses: shaped like a recitation."""
-    return quiet(0.6) + b"".join(tone(1.2) + quiet(0.8) for _ in range(phrases))
+    """Lead-in silence, then one 2.5 s "phrase" per ayah with 0.8 s pauses: shaped like a recitation."""
+    return quiet(0.6) + b"".join(tone(2.5) + quiet(0.8) for _ in range(phrases))
 
 
 async def run_session(audio: bytes, phrases: list[str], chunk: int = 3200):
@@ -74,12 +74,12 @@ def test_the_word_being_said_is_not_called_wrong_yet():
 
         s = LiveSession(EXP, FakeTranscriber(), notify)
         s.feed(quiet(0.5) + tone(1.0))
-        s.phrases[0].text = " ".join(AYAH[1][:3] + ["فع"])   # cut off mid-word, still being said
+        s.phrases[0].partial = " ".join(AYAH[1][:3] + ["فع"])   # cut off mid-word, still being said
         return s.progress()
 
     p = asyncio.run(go())
     st = [w["status"] for w in p["words"]]
-    assert st[:3] == ["correct"] * 3 and st[3] == "current" and p["next"] == 4
+    assert st[:3] == ["correct"] * 3 and st[3] == "current" and p["next"] == 3
 
 
 def test_skipped_ayah_does_not_end_the_check_early():
@@ -193,3 +193,11 @@ def test_silence_before_and_after_does_not_hide_the_pauses():
     padded = speech_spans([-100.0] * 50 + recited + [-100.0] * 400)
     assert len(plain) == 3
     assert [(round(a - 1.0, 2), round(b - 1.0, 2)) for a, b in padded] == [(round(a, 2), round(b, 2)) for a, b in plain]
+
+
+def test_a_quiet_noise_is_not_a_phrase():
+    """A breath or a chair after the last ayah (25 dB under the voice) must not reach the speech model,
+    which would make words up for it."""
+    from app.audio import speech_spans
+    lv = [-100.0] * 20 + [-18.0] * 150 + [-100.0] * 40 + [-45.0] * 20 + [-100.0] * 40
+    assert len(speech_spans(lv)) == 1

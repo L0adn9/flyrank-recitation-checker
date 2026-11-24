@@ -28,16 +28,86 @@ _FOLD = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", "ى": "ي
 BASMALA = ["بسم", "الله", "الرحمن", "الرحيم"]
 ISTIADHA = ["اعوذ", "بالله", "من", "الشيطان", "الرجيم"]
 CLOSING = ["صدق", "الله", "العظيم"]
+AMIN = ["امين"]
+# The disjoint letters that open some surahs (الم, يس, ...). They are said as letter names ("alif lam
+# mim"), which speech recognition writes in all sorts of ways.
+MUQATTAAT = {"الم", "المص", "الر", "المر", "كهيعص", "طه", "طسم", "طس", "يس", "ص", "حم", "عسق", "ق", "ن"}
 
 
 def norm_word(word: str) -> str:
-    """One word in its comparison form: no harakat, one alef, ya/ta-marbuta/hamza seats folded."""
-    w = _MARKS.sub("", word).translate(_FOLD)
+    """One word in its comparison form: no harakat, one alef, ya/ta-marbuta/hamza seats folded. The mushaf's
+    waw with a small alef (ٱلصَّلَوٰةَ) is the alef of the usual spelling (الصلاة)."""
+    w = _MARKS.sub("", word.replace("وٰ", "ا")).translate(_FOLD)
     return _NOT_LETTER.sub("", w)
 
 
+def plausible(text: str, seconds: float) -> bool:
+    """Could this have been said in this much audio? Speech models make up text for a cough, an "amin" or
+    a breath, and loop on hard audio (ومن ومن ومن ومن). Nobody recites more than three words a second,
+    and no word comes three times in a row in the Quran."""
+    words = norm_words(text)
+    if len(words) > 1 + 3 * seconds:
+        return False
+    return not any(words[i] == words[i + 1] == words[i + 2] for i in range(len(words) - 2))
+
+
+def keep_phrase(text: str, seconds: float, before: list[str], expected: list["Word"]) -> bool:
+    """Is a recognised phrase worth keeping? Not when it is implausible (above); not when it is a short echo
+    of the end of the phrase before (a reciter holding the last syllable, سجيل ... يل, heard as the word
+    again); and not when it is a single word that appears nowhere in the passage (noise after the end)."""
+    words = norm_words(text)
+    if not words or not plausible(text, seconds):
+        return False
+    if len(words) <= 2 and seconds < 1.5 and before[-len(words):] == words:
+        return False
+    if len(words) == 1 and match_key(words[0]) not in {match_key(w.norm) for w in expected}:
+        return False
+    return True
+
+
+_PREFIXES = {"و", "ف", "ب", "ل", "ك"}
+
+
 def norm_words(text: str) -> list[str]:
-    return [w for w in (norm_word(t) for t in text.split()) if w]
+    """Normalised words. A lone و / ف / ب / ل / ك is a prefix the speech model wrote apart (وَ أَرْسَلَ):
+    it is joined to the next word, as these letters are never words on their own. Another lone letter
+    followed by a word starting with it is a false start (غَ غَيْرِ) and is dropped."""
+    out: list[str] = []
+    lead = ""
+    words = [w for w in (norm_word(t) for t in text.split()) if w]
+    for k, w in enumerate(words):
+        if len(w) == 1 and k + 1 < len(words) and words[k + 1][0] == w and w not in _PREFIXES:
+            continue   # a false start: غ غير
+        if w in _PREFIXES:
+            lead += w
+            continue
+        out.append(lead + w)
+        lead = ""
+    if lead:
+        out.append(lead)
+    return out
+
+
+# Letters that sound alike and that speech recognition (and many reciters) confuse. Recite checks which
+# words were said, not how they were pronounced, so a word is not wrong over one of these.
+_SOUND = str.maketrans({"ظ": "ض", "ذ": "ز", "ث": "س", "ص": "س", "ط": "ت", "د": "ت", "ح": "ه", "ق": "ك", "غ": "خ"})
+_SUN = set("تثدذرزسشصضطظلن")
+
+
+def match_key(norm: str) -> str:
+    """The form two words are compared in:
+    - "al" before a sun letter as it is pronounced: الرحمن is said "ar-rahman", and the speech model
+      sometimes writes it that way (ارحمن);
+    - sound-alike letters folded;
+    - in words of four letters or more, alefs after the first letter dropped, because the mushaf and
+      modern spelling differ exactly there (الرحمن / الرحمان, العالمين / العلمين, ذلك / ذالك). Short words
+      keep them: قال (he said) and قل (say) must stay different."""
+    if len(norm) > 3 and norm.startswith("ال") and norm[2] in _SUN and norm != "الله":
+        norm = "ا" + norm[2:]
+    k = norm.translate(_SOUND)
+    if len(k) >= 4:
+        k = k[0] + k[1:].replace("ا", "")
+    return k
 
 
 @dataclass(frozen=True)
@@ -46,6 +116,7 @@ class Word:
     ayah: int
     text: str       # as shown, in Uthmani script ('' when written joined to the word before)
     norm: str       # comparison form, from the simple spelling
+    spoken: str = ""  # the simple spelling with its harakat, given to the speech model as context
 
 
 def split_basmala(surah: int, ayah: int, text: str) -> tuple[str | None, str]:
@@ -113,22 +184,36 @@ def expected_words(surah: int, ayahs: list[tuple]) -> list[Word]:
         uthmani = rest[0] if rest and rest[0] else None
         shown = display_for(tokens, display_tokens(split_basmala(surah, ayah, uthmani)[1])) if uthmani else tokens
         for token, display in zip(tokens, shown):
-            words.append(Word(len(words), ayah, display, norm_word(token)))
+            words.append(Word(len(words), ayah, display, norm_word(token), token))
     return words
 
 
 def _strip_prefix(heard: list[str], phrase: list[str]) -> list[str]:
-    return heard[len(phrase):] if heard[: len(phrase)] == phrase else heard
+    """Drop the phrase from the start of heard. It may be heard a little differently (اعوزوا الله ما
+    الشيطن الرجي): all but one of its words must match, each with at most one letter off."""
+    from difflib import SequenceMatcher
+    n = len(phrase)
+    if len(heard) < n:
+        return heard
+    near = sum(SequenceMatcher(a=match_key(h), b=match_key(p)).ratio() >= 0.7 for h, p in zip(heard, phrase))
+    return heard[n:] if near >= n - (1 if n >= 4 else 0) else heard
 
 
 def clean_heard(heard: list[str], expected: list[Word]) -> list[str]:
     """Drop what reciters customarily add around a recitation and that is not part of the range:
-    the isti'adha and basmala before it, and 'sadaqa Allahu al-azim' after it."""
+    the isti'adha and basmala before it, and 'amin' (after Al-Fatiha) and 'sadaqa Allahu al-azim' after it."""
     heard = _strip_prefix(heard, ISTIADHA)
     if [w.norm for w in expected[:4]] != BASMALA:
         heard = _strip_prefix(heard, BASMALA)
-    if heard[-3:] == CLOSING and [w.norm for w in expected[-3:]] != CLOSING:
-        heard = heard[:-3]
+    if len(expected) > 1 and expected[0].norm in MUQATTAAT:
+        # Whatever was heard before the first word after the letters is the letters.
+        nxt = match_key(expected[1].norm)
+        j = next((j for j, h in enumerate(heard[:6]) if match_key(h) == nxt), None)
+        if j:
+            heard = [expected[0].norm] + heard[j:]
+    for tail in (CLOSING, AMIN, CLOSING):
+        if heard[-len(tail):] == tail and [w.norm for w in expected[-len(tail):]] != tail:
+            heard = heard[:-len(tail)]
     return heard
 
 

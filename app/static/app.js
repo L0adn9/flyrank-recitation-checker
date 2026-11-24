@@ -209,7 +209,7 @@ async function renderText() {
   } else if (live) {
     const p = live.progress;
     words = live.words.map((w, i) => ({ ...w, i, status: p ? p.words[i].status : "pending", heard: p?.words[i].heard }));
-    extras = p ? p.extras : [];
+    extras = [];   // extra words are only shown in the result, not while reciting
   } else {
     words = data.ayahs.filter((a) => a.ayah >= from && a.ayah <= to).flatMap((a) => wordsFromText(a.text, a.ayah));
   }
@@ -220,8 +220,9 @@ async function renderText() {
   }
   const extraHTML = (i) => (extrasAt.get(i) || []).map((e) => {
     const cls = e.kind === "repeat" ? "repeat" : e.kind === "moved" ? "moved" : "extra-word";
-    const label = e.kind === "repeat" ? "Repeated" : e.kind === "moved" ? "Said here, out of order" : "Extra word, not in the text";
-    return `<span class="extra ${cls}" title="${label}">${e.kind === "extra" ? "+ " : ""}${esc(e.words.join(" "))}</span>`;
+    const label = e.kind === "repeat" ? "You went back and said this again (not a mistake)" : e.kind === "moved" ? "Said here, out of order" : "Extra word, not in the text";
+    const mark = e.kind === "extra" ? "+ " : e.kind === "repeat" ? "↺ " : "";
+    return `<span class="extra ${cls}" title="${label}">${mark}${esc(e.words.join(" "))}</span>`;
   }).join(" ");
 
   // The mushaf writes some phrases as one word (يا قوم -> يَـٰقَوْمِ). Such words arrive as one word with
@@ -253,7 +254,7 @@ async function renderText() {
       return;
     }
     let html = esc(u.text);
-    if (u.status === "wrong") html = `<ruby>${html}<rt>${esc(u.heard)}</rt></ruby>`;
+    if (u.status === "wrong" && !live && u.heard) html = `<ruby>${html}<rt>${esc(u.heard)}</rt></ruby>`;
     let cls = u.status && u.status !== "correct" ? ` ${u.status}` : "";
     if (k === nextAt) cls += " next";
     if (live && !waiting) {
@@ -367,7 +368,10 @@ async function startRecording() {
     toast("This browser can't check live. Upload a recording instead.");
     return;
   }
-  const ctx = new AudioContext();
+  // Ask for 16 kHz, so the browser resamples the mic properly; fall back to the device rate (the worklet
+  // then filters and resamples) where a 16 kHz context can't take a microphone.
+  let ctx;
+  try { ctx = new AudioContext({ sampleRate: 16000 }); } catch { ctx = new AudioContext(); }
   try {
     rec.stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -412,7 +416,16 @@ async function startRecording() {
     return;
   }
   if (rec.ctx !== ctx) return; // cancelled meanwhile
-  const source = ctx.createMediaStreamSource(rec.stream);
+  let source;
+  try {
+    source = ctx.createMediaStreamSource(rec.stream);
+  } catch {
+    // e.g. Firefox: a mic can't feed a context at another rate. Start again at the device rate.
+    ctx.close();
+    rec.ctx = ctx = new AudioContext();
+    await ctx.audioWorklet.addModule("/static/pcm-worklet.js");
+    source = ctx.createMediaStreamSource(rec.stream);
+  }
   rec.node = new AudioWorkletNode(ctx, "pcm-16k");
   rec.node.port.onmessage = (e) => {
     const pcm = new Int16Array(e.data);
@@ -588,12 +601,12 @@ async function showResult(a) {
     <div class="score">
       <div class="score-big num">${pct(a.accuracy)}<small>%</small></div>
       <div class="score-text">
-        <b>${r.correct} of ${plural(r.total, "word")} right</b>${r.mistakes ? ` · ${plural(r.mistakes, "mistake")}` : " · no mistakes"}${hes ? ` · ${plural(hes, "hesitation")}` : ""}
+        <b>${r.correct} of ${plural(r.total, "word")} right</b>${r.mistakes ? ` · ${plural(r.mistakes, "mistake")}` : " · no mistakes"}${hes ? ` · went back ${hes === 1 ? "once" : `${hes} times`}` : ""}
         <p>${esc(a.surah_name)} ${range(a.ayah_from, a.ayah_to)} · ${when}${speed ? ` · ${speed}` : ""}</p>
       </div>
     </div>
     <div class="ayah-dots" aria-label="Ayahs">${r.ayahs.map((x) =>
-      `<span class="ayah-dot ${x.solid ? "solid" : "weak"}" title="Ayah ${x.ayah}: ${x.solid ? "solid" : `${plural(x.mistakes, "mistake")}${x.repeats ? `, ${plural(x.repeats, "hesitation")}` : ""}`}">${x.ayah}</span>`).join("")}</div>`;
+      `<span class="ayah-dot ${x.solid ? "solid" : "weak"}" title="Ayah ${x.ayah}: ${x.solid ? "solid" : `${plural(x.mistakes, "mistake")}${x.repeats ? `, went back ${x.repeats === 1 ? "once" : `${x.repeats} times`}` : ""}`}">${x.ayah}</span>`).join("")}</div>`;
   $("#legend").hidden = r.mistakes + r.repeats === 0;
   const heard = $("#heard");
   heard.hidden = !a.transcript;

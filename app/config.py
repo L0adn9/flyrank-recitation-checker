@@ -21,8 +21,10 @@ class Settings:
     jwt_secret: str = os.getenv("JWT_SECRET", "")
     jwt_ttl_minutes: int = int(os.getenv("JWT_TTL_MINUTES", "720"))
     whisper_cli: str = os.getenv("WHISPER_CLI", "whisper-cli")
-    whisper_model: Path = _path(os.getenv("WHISPER_MODEL", "models/ggml-tarteel-base-q8_0.bin"))
-    whisper_threads: int = int(os.getenv("WHISPER_THREADS", "4"))
+    # Accurate model: every final decision. Fast model: only to follow along while a phrase is being said.
+    whisper_model: Path = _path(os.getenv("WHISPER_MODEL", "models/ggml-tarbiyah-small-q8_0.bin"))
+    whisper_fast_model: Path = _path(os.getenv("WHISPER_FAST_MODEL", "models/ggml-tarteel-base-q8_0.bin"))
+    whisper_threads: int = int(os.getenv("WHISPER_THREADS") or min(8, os.cpu_count() or 4))
     storage_dir: Path = _path(os.getenv("STORAGE_DIR", "storage"))
     revision_cron: str = os.getenv("REVISION_CRON", "0 5 * * *")
     timezone: str = os.getenv("TZ", "UTC") or "UTC"

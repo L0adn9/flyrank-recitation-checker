@@ -1,5 +1,5 @@
 """Spaced revision. After every check each ayah gets a due date:
-- said with a mistake or a hesitation -> due again tomorrow, streak reset;
+- said with a mistake -> due again tomorrow, streak reset (going back to repeat is not a mistake);
 - said cleanly -> the gap grows: 1, 3, 7, 14, 30, then 60 days.
 The daily cron turns due ayahs into a short plan of ranges to recite."""
 import json
