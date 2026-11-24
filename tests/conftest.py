@@ -15,7 +15,7 @@ os.environ["DATABASE_URL"] = SERVER + "/recite_test"
 os.environ["JWT_SECRET"] = "test-secret-" + "x" * 40
 os.environ.setdefault("STORAGE_DIR", "/tmp/recite-test-storage")
 
-TABLES = "jobs, attempts, users"
+TABLES = "jobs, transcripts, attempts, users"
 
 
 def _ensure_database():

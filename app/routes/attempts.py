@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Respon
 
 from app import jobs
 from app.auth import current_user
+from app.checker import score_from_cache
 from app.config import settings
 from app.db import connection
 
@@ -11,7 +12,8 @@ router = APIRouter(prefix="/attempts", tags=["attempts"])
 
 AUDIO_TYPES = {"video/webm", "video/ogg", "video/mp4", "application/octet-stream", ""}
 COLUMNS = ("a.id, a.surah, s.name_en AS surah_name, s.name_ar AS surah_name_ar, a.ayah_from, a.ayah_to, a.status,"
-           " a.accuracy, a.word_count, a.mistake_count, a.error, a.created_at, a.finished_at")
+           " a.accuracy, a.word_count, a.mistake_count, a.cache_hit, a.recognition_seconds, a.error,"
+           " a.created_at, a.finished_at")
 
 
 def _read_upload(audio: UploadFile) -> bytes:
@@ -54,8 +56,9 @@ def create_attempt(
     surah: int = Form(), ayah_from: int = Form(), ayah_to: int = Form(),
     audio: UploadFile = File(), user: dict = Depends(current_user),
 ):
-    """Accept a recording and queue it. Speech recognition takes seconds, so it runs in the worker;
-    poll GET /attempts/{id} until status is 'done' or 'failed'."""
+    """Accept a recording. Speech recognition takes seconds, so normally the attempt is queued for the
+    worker (202; poll GET /attempts/{id} until status is 'done' or 'failed'). If this exact recording
+    was transcribed before, the cached transcript is scored right away (201, status 'done')."""
     data = _read_upload(audio)
     digest = hashlib.sha256(data).hexdigest()
     with connection() as conn:
@@ -63,12 +66,16 @@ def create_attempt(
         path = settings.uploads_dir / digest
         if not path.exists():
             path.write_bytes(data)
-        attempt_id = conn.execute(
-            "INSERT INTO attempts (user_id, surah, ayah_from, ayah_to, audio_path)"
-            " VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (user["id"], surah, ayah_from, ayah_to, str(path)),
-        ).fetchone()["id"]
-        jobs.enqueue(conn, "check_attempt", {"attempt_id": attempt_id})
+        attempt = conn.execute(
+            "INSERT INTO attempts (user_id, surah, ayah_from, ayah_to, audio_path, audio_sha256)"
+            " VALUES (%s, %s, %s, %s, %s, %s) RETURNING *",
+            (user["id"], surah, ayah_from, ayah_to, str(path), digest),
+        ).fetchone()
+        attempt_id = attempt["id"]
+        if score_from_cache(conn, attempt):
+            response.status_code = 201
+        else:
+            jobs.enqueue(conn, "check_attempt", {"attempt_id": attempt_id})
         conn.commit()
         response.headers["Location"] = f"/attempts/{attempt_id}"
         return get_owned(conn, attempt_id, user["id"])
