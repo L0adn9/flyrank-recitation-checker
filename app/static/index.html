@@ -30,8 +30,8 @@
       <h1>Recite from memory. See every word you missed.</h1>
       <p>Record yourself reciting a passage. Recite listens, checks it against the Quran text word by word, and tells you what to revise and when.</p>
       <ol class="auth-steps">
-        <li><span><b>Pick a passage</b> and recite it with the text hidden.</span></li>
-        <li><span><b>Get it checked in seconds:</b> skipped, wrong, repeated and out-of-order words are marked.</span></li>
+        <li><span><b>Pick a passage</b> and recite it from memory.</span></li>
+        <li><span><b>Every word is checked as you say it:</b> skipped, wrong, repeated and out-of-order words are marked on the spot.</span></li>
         <li><span><b>Revise what is slipping.</b> Each morning brings a short plan built from your own mistakes.</span></li>
       </ol>
     </div>
@@ -83,13 +83,7 @@
       <div id="result-head" hidden></div>
 
       <div class="mushaf-wrap">
-        <div class="mushaf" id="mushaf" lang="ar"></div>
-        <div class="veil" id="veil" hidden>
-          <div class="veil-card">
-            <p>The text is hidden so you recite from memory.</p>
-            <button class="btn small" id="peek">Show text</button>
-          </div>
-        </div>
+        <div class="mushaf" id="mushaf" lang="ar" aria-live="polite"></div>
       </div>
       <div class="legend" id="legend" hidden>
         <span><i class="k-wrong"></i>Wrong word, with what you said above it</span>
@@ -100,19 +94,21 @@
       </div>
       <details class="heard" id="heard" hidden><summary>What Recite heard</summary><p></p></details>
 
-      <!-- recorder: idle / recording / recorded -->
+      <div class="playback" id="playback" hidden><span>Your recitation</span><audio controls preload="metadata"></audio></div>
+
+      <!-- recorder: idle / connecting / live / finishing -->
       <div id="recorder">
         <div class="recorder" id="rec-row">
-          <button class="rec-btn" id="rec-btn" aria-label="Start recording"><svg><use href="#i-mic"/></svg></button>
+          <button class="rec-btn" id="rec-btn" aria-label="Start reciting"><svg><use href="#i-mic"/></svg></button>
           <div class="rec-main">
-            <div class="rec-title" id="rec-title">Record your recitation</div>
-            <div class="rec-sub" id="rec-sub">Pause briefly between ayahs. Up to 3 minutes.</div>
+            <div class="rec-title" id="rec-title">Recite</div>
+            <div class="rec-sub" id="rec-sub">Each word is checked as you say it.</div>
             <div class="meter" id="meter" hidden></div>
           </div>
           <div class="rec-actions" id="rec-actions"></div>
         </div>
         <div class="recorder-foot">
-          <label class="toggle"><input type="checkbox" id="hide-text" checked> Hide the text while I recite</label>
+          <label class="toggle"><input type="checkbox" id="hide-text" checked> Recite from memory (words appear as I say them)</label>
           <span><button class="upload-link" id="upload-btn">or upload an audio file</button>
             <input type="file" id="file" accept="audio/*,.m4a,.webm,.ogg,.mp3,.wav" hidden></span>
         </div>

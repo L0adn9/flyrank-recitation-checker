@@ -173,17 +173,33 @@ button, input, select { font: inherit; color: inherit; }
   font-family: "Amiri Quran", "Amiri", serif; direction: rtl; text-align: center;
   font-size: clamp(25px, 2.7vw, 32px); line-height: 2.7; word-spacing: .28em; color: var(--ink);
 }
-.verses .w { padding: 0 .04em; }
+.verses .w { padding: 0 .04em; border-radius: 6px; transition: color .25s ease, opacity .25s ease, background-color .2s ease; }
 .verses .end { font-family: "Amiri Quran", "Amiri", serif; color: var(--accent); margin: 0 .3em; white-space: nowrap; word-spacing: 0; }
-.mushaf.veiled { filter: blur(9px); user-select: none; }
-.veil {
-  position: absolute; inset: 0; display: grid; place-items: center; text-align: center; pointer-events: none;
+
+/* live: words not reached yet are faint, the word you are on is highlighted, said words appear */
+.verses .w.pending { color: var(--ink-3); opacity: .5; }
+.verses .w.next, .verses .w.current {
+  color: var(--ink); opacity: 1; background: var(--accent-soft);
+  box-shadow: 0 0 0 .12em var(--accent-soft); -webkit-box-decoration-break: clone; box-decoration-break: clone;
 }
-.veil-card {
-  pointer-events: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px;
-  padding: 14px 18px; box-shadow: var(--shadow); max-width: 300px;
+.verses .w.current { animation: breathe 1.4s ease-in-out infinite; }
+.verses .w.appear { animation: appear .35s ease-out both; }
+.verses .caret {
+  display: inline-block; width: 2px; height: 1.15em; vertical-align: -.2em; margin: 0 .15em;
+  background: var(--accent); border-radius: 1px; animation: blink 1.1s steps(1) infinite;
 }
-.veil-card p { margin: 0 0 10px; color: var(--ink-2); font-size: 14px; }
+.verses .hearing {
+  display: inline-block; width: 2.4em; height: .95em; vertical-align: -.1em; margin: 0 .1em;
+  border-radius: 7px; background: var(--accent-soft); animation: breathe 1.4s ease-in-out infinite;
+}
+.live-hint { font-family: "IBM Plex Sans", system-ui, sans-serif; direction: ltr; font-size: 14px; line-height: 1.5; color: var(--ink-3); margin: 4px 0 0; word-spacing: normal; }
+@keyframes appear { from { opacity: 0; transform: translateY(.18em); } to { opacity: 1; transform: none; } }
+@keyframes blink { 50% { opacity: 0; } }
+@keyframes breathe { 50% { opacity: .55; } }
+.verses .w.appear { display: inline-block; }
+@media (prefers-reduced-motion: reduce) {
+  .verses .w.appear, .verses .w.current, .verses .hearing, .verses .caret { animation: none; }
+}
 
 /* result marks */
 .verses .w.wrong { color: var(--wrong); text-decoration: underline solid var(--wrong); text-decoration-thickness: 2px; text-underline-offset: 12px; }
@@ -293,6 +309,9 @@ audio { height: 36px; max-width: 100%; }
   background: var(--ink); color: var(--paper); padding: 10px 16px; border-radius: var(--radius); font-size: 14px;
   box-shadow: 0 6px 24px rgba(0,0,0,.18); max-width: calc(100vw - 32px);
 }
+.rec-btn .spinner.light { width: 20px; height: 20px; color: var(--on-accent); }
+.playback { display: flex; align-items: center; gap: 10px; padding: 14px 20px 0; color: var(--ink-3); font-size: 13px; }
+.playback audio { height: 34px; flex: 1 1 auto; max-width: 420px; min-width: 0; }
 .spinner { width: 15px; height: 15px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

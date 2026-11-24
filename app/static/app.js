@@ -79,8 +79,8 @@ const state = {
   texts: new Map(), // surah number -> GET /surahs/{n}
   passage: { surah: 105, from: 1, to: 5 },
   result: null, // attempt shown in the page, or null
-  rec: { status: "idle" }, // idle | recording | recorded | busy
-  peeked: false,
+  rec: { status: "idle" }, // idle | connecting | live | finishing | busy (uploading)
+  live: null, // while reciting: { words, progress, revealed }
 };
 
 // ---------- sign in ----------
@@ -195,15 +195,21 @@ function wordsFromText(text, ayah) {
   return out.map((t) => ({ text: t, ayah, status: null }));
 }
 
-/** Render the passage, optionally with a result's marks on it. */
+/** Render the passage: plain, with a result's marks on it, or live while reciting. */
 async function renderText() {
   const { surah, from, to } = state.passage;
   const data = await surahText(surah);
   const r = state.result?.status === "done" ? state.result.result : null;
+  const live = isLive() && state.live.words ? state.live : null;
+  const hide = Boolean(live) && $("#hide-text").checked;
   let words, extras = [];
   if (r) {
     words = r.words;
     extras = r.extras;
+  } else if (live) {
+    const p = live.progress;
+    words = live.words.map((w, i) => ({ ...w, i, status: p ? p.words[i].status : "pending", heard: p?.words[i].heard }));
+    extras = p ? p.extras : [];
   } else {
     words = data.ayahs.filter((a) => a.ayah >= from && a.ayah <= to).flatMap((a) => wordsFromText(a.text, a.ayah));
   }
@@ -219,8 +225,9 @@ async function renderText() {
   }).join(" ");
 
   // The mushaf writes some phrases as one word (يا قوم -> يَـٰقَوْمِ). Such words arrive as one word with
-  // text and the rest with text "": show them as one, marked with the most serious status among them.
-  const rank = { wrong: 3, moved: 2, missed: 1 };
+  // text and the rest with text "": show them as one, marked with the most serious status among them
+  // (and live, not shown as said until all of it has been said).
+  const rank = { wrong: 5, moved: 4, missed: 3, current: 2, pending: 1 };
   const units = [];
   words.forEach((w, i) => {
     const idx = w.i ?? i;
@@ -235,17 +242,39 @@ async function renderText() {
   });
 
   const titles = { wrong: (u) => `Wrong: you said “${u.heard}”`, missed: () => "Missed", moved: () => "Out of order" };
+  const nextAt = live ? units.findIndex((u) => u.status === "pending" || u.status === "current") : -1;
   const parts = [extraHTML(-1)];
+  let shown = 0;
   units.forEach((u, k) => {
+    const waiting = u.status === "pending" || u.status === "current";
+    if (hide && waiting) {
+      // Reciting from memory: words appear only once said. Mark the spot where the next word will go.
+      if (k === nextAt) parts.push(u.status === "current" ? `<span class="hearing" aria-label="listening"></span>` : `<span class="caret" aria-hidden="true"></span>`);
+      return;
+    }
     let html = esc(u.text);
     if (u.status === "wrong") html = `<ruby>${html}<rt>${esc(u.heard)}</rt></ruby>`;
-    const cls = u.status && u.status !== "correct" ? ` ${u.status}` : "";
+    let cls = u.status && u.status !== "correct" ? ` ${u.status}` : "";
+    if (k === nextAt) cls += " next";
+    if (live && !waiting) {
+      shown++;
+      if (!live.revealed.has(u.idx)) { live.revealed.add(u.idx); cls += " appear"; }
+    }
     const title = titles[u.status] ? ` title="${esc(titles[u.status](u))}"` : "";
     parts.push(`<span class="w${cls}"${title}>${html}</span>`);
     if (extrasAt.has(u.idx)) parts.push(extraHTML(u.idx));
     const next = units[k + 1];
     if (!next || next.ayah !== u.ayah) parts.push(`<span class="end" aria-label="end of ayah ${u.ayah}">\u06DD${arNum(u.ayah)}</span>`);
   });
+  if (hide && !shown) parts.push(`<p class="live-hint">The words appear here as you recite them.</p>`);
+  if (live) {
+    const at = units[nextAt];
+    const sub = $("#rec-sub");
+    if (sub && state.rec.status === "live") {
+      sub.textContent = nextAt < 0 ? "You reached the end of the passage. Press stop (or Space) for your result."
+        : `Ayah ${at.ayah} of ${from}–${to}. ${hide ? "Recite from memory; the words appear as you say them." : "The highlighted word is where you are."}`;
+    }
+  }
 
   const meta = state.surahs[surah - 1];
   const showBasmala = data.basmala && from === 1;
@@ -256,93 +285,149 @@ async function renderText() {
     <div class="verses">${parts.join(" ")}</div>`;
 }
 
-// ---------- recorder ----------
-const rec = { media: null, stream: null, chunks: [], ctx: null, raf: 0, timer: 0, started: 0, blob: null, url: null };
+// ---------- recorder (live) ----------
+// While you recite, the microphone audio streams to the server over a WebSocket (16 kHz PCM from an
+// AudioWorklet). The server recognises each phrase as it is said and sends every word's status back,
+// so the page marks words as they are recited. Stop (or finishing the passage) gives the full result.
+const rec = { ws: null, stream: null, ctx: null, node: null, raf: 0, timer: 0, started: 0, chunks: [], queue: [], ready: false, url: null, done: false };
+const isLive = () => state.rec.status === "live" || state.rec.status === "finishing";
 
 function meterBars(n = 36) {
   $("#meter").innerHTML = "<i></i>".repeat(n);
-}
-
-function setVeil(on) {
-  $("#mushaf").classList.toggle("veiled", on);
-  $("#veil").hidden = !on;
 }
 
 function renderRecorder() {
   const s = state.rec.status;
   const btn = $("#rec-btn");
   const actions = $("#rec-actions");
-  $("#rec-row").classList.toggle("recording-row", s === "recording");
-  btn.classList.toggle("recording", s === "recording");
-  btn.disabled = s === "busy";
-  btn.innerHTML = `<svg><use href="#i-${s === "recording" ? "stop" : "mic"}"/></svg>`;
-  btn.setAttribute("aria-label", s === "recording" ? "Stop recording" : "Start recording");
-  $("#meter").hidden = s !== "recording";
+  const on = s === "live" || s === "connecting";
+  $("#rec-row").classList.toggle("recording-row", on);
+  btn.classList.toggle("recording", on);
+  btn.disabled = s === "busy" || s === "finishing";
+  btn.innerHTML = s === "finishing" ? `<span class="spinner light"></span>` : `<svg><use href="#i-${on ? "stop" : "mic"}"/></svg>`;
+  btn.setAttribute("aria-label", on ? "Stop and see the result" : "Start reciting");
+  $("#meter").hidden = !on;
   const { surah, from, to } = state.passage;
   const name = state.surahs[surah - 1]?.name_en ?? "";
   if (s === "idle") {
     $("#rec-title").textContent = `Recite ${name} ${range(from, to)}`;
-    $("#rec-sub").textContent = "Press the button and recite. Pause briefly between ayahs. Up to 3 minutes.";
+    $("#rec-sub").textContent = "Press the button and start reciting. Each word is checked as you say it.";
     actions.innerHTML = "";
-  } else if (s === "recording") {
-    $("#rec-title").innerHTML = `Recording <span class="rec-time" id="rec-time">0:00</span>`;
-    $("#rec-sub").textContent = "Press stop when you finish the last ayah.";
+  } else if (s === "connecting") {
+    $("#rec-title").innerHTML = `Starting <span class="rec-time" id="rec-time">0:00</span>`;
+    $("#rec-sub").textContent = "Connecting to the listener…";
     actions.innerHTML = `<button class="btn ghost small" id="rec-cancel">Cancel</button>`;
     $("#rec-cancel").onclick = () => stopRecording(true);
-  } else if (s === "recorded") {
-    $("#rec-title").textContent = "Your recording";
-    $("#rec-sub").innerHTML = `<audio controls src="${rec.url}"></audio>`;
-    actions.innerHTML = `<button class="btn ghost small" id="rec-discard">Discard</button>
-      <button class="btn primary" id="rec-send"><svg><use href="#i-check"/></svg>Check it</button>`;
-    $("#rec-discard").onclick = () => { resetRecorder(); renderRecorder(); setVeil(false); };
-    $("#rec-send").onclick = () => submit(rec.blob, `recitation.${extFor(rec.blob.type)}`);
+  } else if (s === "live") {
+    $("#rec-title").innerHTML = `Listening <span class="rec-time" id="rec-time">0:00</span>`;
+    actions.innerHTML = `<button class="btn ghost small" id="rec-cancel">Cancel</button>`;
+    $("#rec-cancel").onclick = () => stopRecording(true);
+  } else if (s === "finishing") {
+    $("#rec-title").textContent = "Finishing";
+    $("#rec-sub").textContent = "Checking the last words…";
+    actions.innerHTML = "";
   } else if (s === "busy") {
     actions.innerHTML = "";
   }
 }
 
-function extFor(type) {
-  if (type.includes("ogg")) return "ogg";
-  if (type.includes("mp4") || type.includes("aac")) return "m4a";
-  return "webm";
+function wavBlob(chunks) {
+  const n = chunks.reduce((t, c) => t + c.length, 0);
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const str = (o, t) => [...t].forEach((ch, i) => v.setUint8(o + i, ch.charCodeAt(0)));
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVEfmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, n * 2, true);
+  let o = 44;
+  for (const c of chunks) { new Int16Array(buf, o, c.length).set(c); o += c.length * 2; }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+function releaseAudio() {
+  clearInterval(rec.timer);
+  cancelAnimationFrame(rec.raf);
+  if (rec.node) rec.node.port.onmessage = null;
+  rec.ctx?.close().catch(() => {});
+  rec.stream?.getTracks().forEach((t) => t.stop());
+  Object.assign(rec, { ctx: null, node: null, stream: null });
 }
 
 function resetRecorder() {
-  if (rec.url) URL.revokeObjectURL(rec.url);
-  Object.assign(rec, { blob: null, url: null, chunks: [] });
+  releaseAudio();
+  if (rec.ws) { rec.ws.onclose = rec.ws.onmessage = rec.ws.onerror = null; try { rec.ws.close(); } catch { /* closed */ } }
+  Object.assign(rec, { ws: null, chunks: [], queue: [], ready: false, done: false });
+  state.live = null;
   state.rec.status = "idle";
 }
 
 async function startRecording() {
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    toast("This browser can't record audio. Upload a recording instead.");
+  if (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode || !window.WebSocket) {
+    toast("This browser can't check live. Upload a recording instead.");
     return;
   }
+  const ctx = new AudioContext();
   try {
-    rec.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    rec.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
   } catch {
+    ctx.close();
     toast("Microphone access was blocked. Allow it in the browser, or upload a recording instead.");
     return;
   }
   clearResult();
-  await renderText();
-  resetRecorder();
-  rec.media = new MediaRecorder(rec.stream);
-  rec.media.ondataavailable = (e) => e.data.size && rec.chunks.push(e.data);
-  rec.media.onstop = onRecorded;
-  rec.media.start(250);
-  rec.started = performance.now();
-  state.rec.status = "recording";
-  state.peeked = false;
-  setVeil($("#hide-text").checked);
+  if (rec.url) { URL.revokeObjectURL(rec.url); rec.url = null; }
+  rec.ctx = ctx;
+  rec.chunks = []; rec.queue = []; rec.ready = false; rec.done = false;
+  state.live = { words: null, progress: null, revealed: new Set() };
+  state.rec.status = "connecting";
   meterBars();
   renderRecorder();
+  await renderText();
 
-  // Live level meter: a rolling row of bars from the mic's RMS level.
-  rec.ctx = new AudioContext();
-  const analyser = rec.ctx.createAnalyser();
+  // The listener: a WebSocket to /live. The token goes in the first message (browsers can't set headers).
+  const { surah, from, to } = state.passage;
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/live`);
+  ws.binaryType = "arraybuffer";
+  rec.ws = ws;
+  ws.onopen = () => ws.send(JSON.stringify({ type: "start", token, surah, ayah_from: from, ayah_to: to }));
+  ws.onmessage = (e) => onLiveMessage(JSON.parse(e.data));
+  ws.onerror = () => {};
+  ws.onclose = () => {
+    if (rec.ws !== ws || rec.done) return;
+    resetRecorder();
+    renderRecorder();
+    renderText();
+    toast("Lost the connection to the listener. Please try again.");
+  };
+
+  // Microphone -> 16 kHz PCM chunks (pcm-worklet.js) -> the socket, and a copy kept for playback.
+  try {
+    await ctx.audioWorklet.addModule("/static/pcm-worklet.js");
+  } catch {
+    stopRecording(true);
+    toast("This browser can't check live. Upload a recording instead.");
+    return;
+  }
+  if (rec.ctx !== ctx) return; // cancelled meanwhile
+  const source = ctx.createMediaStreamSource(rec.stream);
+  rec.node = new AudioWorkletNode(ctx, "pcm-16k");
+  rec.node.port.onmessage = (e) => {
+    const pcm = new Int16Array(e.data);
+    rec.chunks.push(pcm);
+    if (rec.ready && rec.ws?.readyState === WebSocket.OPEN) rec.ws.send(e.data);
+    else rec.queue.push(e.data);
+  };
+  const mute = ctx.createGain();
+  mute.gain.value = 0;
+  source.connect(rec.node).connect(mute).connect(ctx.destination);
+
+  // Level meter: a rolling row of bars from the mic's loudness.
+  const analyser = ctx.createAnalyser();
   analyser.fftSize = 1024;
-  rec.ctx.createMediaStreamSource(rec.stream).connect(analyser);
+  source.connect(analyser);
   const buf = new Float32Array(analyser.fftSize);
   const bars = [...$("#meter").children];
   const levels = new Array(bars.length).fill(0);
@@ -358,6 +443,7 @@ async function startRecording() {
     bars.forEach((b, i) => (b.style.height = `${3 + levels[i] * 31}px`));
   };
   rec.raf = requestAnimationFrame(draw);
+  rec.started = performance.now();
   rec.timer = setInterval(() => {
     const secs = Math.floor((performance.now() - rec.started) / 1000);
     const el = $("#rec-time");
@@ -366,28 +452,53 @@ async function startRecording() {
   }, 250);
 }
 
-function stopRecording(cancel = false) {
-  if (state.rec.status !== "recording") return;
-  rec.cancelled = cancel;
-  clearInterval(rec.timer);
-  cancelAnimationFrame(rec.raf);
-  rec.ctx?.close();
-  rec.media?.state !== "inactive" && rec.media.stop();
-  rec.stream?.getTracks().forEach((t) => t.stop());
+async function onLiveMessage(m) {
+  if (m.type === "ready") {
+    rec.ready = true;
+    state.live.words = m.words;
+    for (const b of rec.queue) rec.ws.send(b);
+    rec.queue = [];
+    if (state.rec.status === "connecting") state.rec.status = "live";
+    renderRecorder();
+    await renderText();
+  } else if (m.type === "progress") {
+    if (!state.live) return;
+    state.live.progress = m;
+    await renderText();
+  } else if (m.type === "complete") {
+    // The whole passage has been recited: no need to press stop.
+    if (state.rec.status === "live") setTimeout(() => stopRecording(), 400);
+  } else if (m.type === "result") {
+    rec.done = true;
+    rec.url = rec.chunks.length ? URL.createObjectURL(wavBlob(rec.chunks)) : null;
+    const url = rec.url;
+    resetRecorder();
+    rec.url = url;
+    await showResult(m.attempt);
+    refreshSide();
+  } else if (m.type === "error") {
+    rec.done = true;
+    resetRecorder();
+    if (m.status === 401) return signOut("Your session ended. Please sign in again.");
+    renderRecorder();
+    await renderText();
+    toast(m.error);
+  }
 }
 
-function onRecorded() {
-  if (rec.cancelled) {
+function stopRecording(cancel = false) {
+  if (!["connecting", "live"].includes(state.rec.status)) return;
+  if (cancel || !rec.ready) {
+    if (rec.ws?.readyState === WebSocket.OPEN) rec.ws.send(JSON.stringify({ type: "cancel" }));
     resetRecorder();
-    setVeil(false);
     renderRecorder();
+    renderText();
     return;
   }
-  rec.blob = new Blob(rec.chunks, { type: rec.media.mimeType || "audio/webm" });
-  rec.url = URL.createObjectURL(rec.blob);
-  state.rec.status = "recorded";
+  releaseAudio();
+  rec.ws.send(JSON.stringify({ type: "stop" }));
+  state.rec.status = "finishing";
   renderRecorder();
-  if ((performance.now() - rec.started) / 1000 < 1.2) toast("That was very short. Record the whole passage.");
 }
 
 // ---------- checking ----------
@@ -423,12 +534,13 @@ async function submit(blob, filename) {
     }
     setStep("done");
     resetRecorder();
+    if (rec.url) { URL.revokeObjectURL(rec.url); rec.url = null; }
     await showResult(a);
     refreshSide();
   } catch (ex) {
     if (ex.status === 401) return;
     toast(ex.message);
-    state.rec.status = rec.blob ? "recorded" : "idle";
+    state.rec.status = "idle";
     $("#recorder").hidden = false;
     $("#steps").hidden = true;
     renderRecorder();
@@ -444,15 +556,17 @@ function clearResult() {
   $("#result-actions").hidden = true;
   $("#steps").hidden = true;
   $("#recorder").hidden = false;
-  setVeil(false);
+  $("#playback").hidden = true;
   if (state.rec.status === "busy") state.rec.status = "idle";
   renderRecorder();
 }
 
 async function showResult(a) {
   state.result = a;
-  setVeil(false);
   $("#recorder").hidden = true;
+  const play = $("#playback");
+  play.hidden = !rec.url;
+  if (rec.url) $("audio", play).src = rec.url;
   $("#steps").hidden = true;
   $("#result-actions").hidden = false;
   const head = $("#result-head");
@@ -467,7 +581,8 @@ async function showResult(a) {
   }
   const r = a.result;
   const hes = r.repeats;
-  const speed = a.cache_hit ? "instant: this exact recording was heard before"
+  const speed = a.live ? "checked live"
+    : a.cache_hit ? "instant: this exact recording was heard before"
     : a.recognition_seconds != null ? `listened in ${a.recognition_seconds.toFixed(1)} s` : "";
   head.innerHTML = `
     <div class="score">
@@ -538,8 +653,9 @@ async function openAttempt(id) {
   try {
     const a = await api(`/attempts/${id}`);
     if (a.status === "queued" || a.status === "processing") return toast("Still checking this one. Give it a moment.");
-    if (state.rec.status === "recording") stopRecording(true);
+    if (isLive() || state.rec.status === "connecting") stopRecording(true);
     resetRecorder();
+    if (rec.url) { URL.revokeObjectURL(rec.url); rec.url = null; }
     await setPassage({ surah: a.surah, from: a.ayah_from, to: a.ayah_to }, { keepResult: true });
     await showResult(a);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -603,11 +719,10 @@ function wire() {
   };
   $("#to").onchange = (e) => setPassage({ ...state.passage, to: +e.target.value });
 
-  $("#rec-btn").onclick = () => (state.rec.status === "recording" ? stopRecording() : startRecording());
-  $("#peek").onclick = () => { state.peeked = true; setVeil(false); };
+  $("#rec-btn").onclick = () => (["live", "connecting"].includes(state.rec.status) ? stopRecording() : startRecording());
   $("#hide-text").onchange = (e) => {
     store.set("recite.hide", e.target.checked ? "1" : "0");
-    if (state.rec.status === "recording" && !state.peeked) setVeil(e.target.checked);
+    if (isLive()) renderText();
   };
   $("#hide-text").checked = store.get("recite.hide") !== "0";
   $("#upload-btn").onclick = () => $("#file").click();
@@ -621,6 +736,13 @@ function wire() {
   };
 
   $("#again").onclick = async () => { clearResult(); await renderText(); $("#rec-btn").focus(); };
+  document.addEventListener("keydown", (e) => {
+    // Space starts and stops reciting, unless typing or on a control.
+    if (e.code !== "Space" || e.repeat || e.target.closest("input, select, textarea, button, audio, a")) return;
+    if ($("#app-view").hidden || $("#recorder").hidden) return;
+    e.preventDefault();
+    $("#rec-btn").click();
+  });
   $("#next-passage").onclick = () => {
     const { surah, to } = state.passage;
     const count = state.surahs[surah - 1].ayah_count;
