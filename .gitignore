@@ -1,0 +1,19 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# runtime data (uploads, generated reports, local databases)
+storage/
+*.db
+*.sqlite3
+
+# big or third-party binaries fetched by scripts
+models/*.bin
+samples/
