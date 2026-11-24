@@ -68,7 +68,7 @@ def create_attempt(surah: int = Form(), ayah_from: int = Form(), ayah_to: int = 
             " accuracy, word_count, mistake_count, finished_at)"
             " VALUES (%s, %s, %s, 'done', %s, %s, %s::jsonb, %s, %s, %s, now()) RETURNING id",
             (surah, ayah_from, ayah_to, str(path), transcript.text, json.dumps(result, ensure_ascii=False),
-             result["accuracy"], result["total"], result["total"] - result["correct"]),
+             result["accuracy"], result["total"], result["mistakes"]),
         ).fetchone()
         conn.commit()
     return {"id": row["id"], "transcript": transcript.text, **result}
