@@ -111,10 +111,14 @@ button, input, select { font: inherit; color: inherit; }
 .wordmark svg { width: 26px; height: 26px; color: var(--accent); }
 .auth-intro h1 { font-size: clamp(28px, 3.4vw, 40px); line-height: 1.15; letter-spacing: -.02em; font-weight: 600; margin: 0 0 16px; max-width: 15em; }
 .auth-intro p { color: var(--ink-2); max-width: 34em; margin: 0; font-size: 16px; }
-.auth-verse { margin-top: 40px; }
+.auth-verse { margin-top: 40px; display: grid; justify-items: start; gap: 0; }
 .auth-verse { margin-inline: 0; }
-.auth-verse .q { font-family: "Amiri Quran", "Amiri", serif; direction: rtl; text-align: left; font-size: 30px; line-height: 2; color: var(--ink); }
-.auth-verse .cite { font-size: 13px; color: var(--ink-3); }
+.auth-verse .q { font-family: "Amiri Quran", "Amiri", serif; direction: rtl; font-size: 32px; line-height: 2.1; word-spacing: .22em; color: var(--ink); }
+.auth-verse .cite {
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--rule); max-width: 34em;
+  font-size: 13.5px; color: var(--ink-3); line-height: 1.6;
+}
+.auth-verse .cite cite { font-style: normal; color: var(--ink-2); white-space: nowrap; }
 .auth-steps { display: grid; gap: 14px; margin-top: 36px; padding: 0; list-style: none; counter-reset: s; max-width: 30em; }
 .auth-steps li { display: grid; grid-template-columns: 28px 1fr; gap: 10px; color: var(--ink-2); }
 .auth-steps li::before {
@@ -162,15 +166,15 @@ button, input, select { font: inherit; color: inherit; }
 }
 .surah-title { display: flex; align-items: center; justify-content: center; gap: 16px; }
 .surah-title::before, .surah-title::after { content: ""; height: 1px; flex: 0 1 72px; background: var(--rule-strong); }
-.surah-title .ar { font-size: 23px; color: var(--ink-2); line-height: 1.4; }
+.surah-title .ar { font-size: 24px; color: var(--ink-2); line-height: 1.6; }
 .surah-sub { text-align: center; color: var(--ink-3); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; font-weight: 500; margin-top: 2px; }
-.basmala { font-family: "Amiri Quran", "Amiri", serif; text-align: center; font-size: 24px; color: var(--ink-2); direction: rtl; margin: 6px 0 4px; }
+.basmala { font-family: "Amiri Quran", "Amiri", serif; text-align: center; font-size: 25px; line-height: 2; word-spacing: .2em; color: var(--ink-2); direction: rtl; margin: 14px 0 6px; }
 .verses {
-  font-family: "Amiri Quran", "Amiri", serif; direction: rtl; text-align: justify; text-align-last: center;
-  font-size: clamp(24px, 2.6vw, 31px); line-height: 2.35; word-spacing: .06em; color: var(--ink);
+  font-family: "Amiri Quran", "Amiri", serif; direction: rtl; text-align: center;
+  font-size: clamp(25px, 2.7vw, 32px); line-height: 2.7; word-spacing: .28em; color: var(--ink);
 }
-.verses .w { border-radius: 4px; padding: 0 1px; }
-.verses .end { font-family: "Amiri Quran", "Amiri", serif; color: var(--accent); margin: 0 .15em; white-space: nowrap; }
+.verses .w { padding: 0 .04em; }
+.verses .end { font-family: "Amiri Quran", "Amiri", serif; color: var(--accent); margin: 0 .3em; white-space: nowrap; word-spacing: 0; }
 .mushaf.veiled { filter: blur(9px); user-select: none; }
 .veil {
   position: absolute; inset: 0; display: grid; place-items: center; text-align: center; pointer-events: none;
@@ -186,7 +190,7 @@ button, input, select { font: inherit; color: inherit; }
 .verses .w.missed { color: var(--ink-3); opacity: .75; text-decoration: underline dashed var(--wrong); text-decoration-thickness: 2px; text-underline-offset: 12px; }
 .verses .w.moved { color: var(--moved); text-decoration: underline dotted var(--moved); text-decoration-thickness: 3px; text-underline-offset: 12px; }
 .verses ruby rt {
-  font-family: "Amiri", serif; font-size: .42em; color: var(--wrong); line-height: 1; padding-bottom: 2px;
+  font-family: "Amiri", serif; font-size: .45em; color: var(--wrong); line-height: 1.2; padding-bottom: 4px; word-spacing: 0;
 }
 .verses .extra {
   display: inline-block; font-family: "Amiri", serif; font-size: .5em; line-height: 1.5; vertical-align: .55em;
@@ -260,7 +264,7 @@ audio { height: 36px; max-width: 100%; }
 .banner { margin: 16px 20px 0; padding: 10px 14px; border-radius: var(--radius); background: var(--wrong-soft); color: var(--wrong); font-size: 14px; }
 .heard { margin: 14px 20px 0; font-size: 13px; color: var(--ink-3); }
 .heard summary { cursor: pointer; }
-.heard p { font-family: "Amiri", serif; direction: rtl; font-size: 19px; color: var(--ink-2); margin: 8px 0 0; line-height: 1.9; }
+.heard p { font-family: "Amiri", serif; direction: rtl; font-size: 20px; color: var(--ink-2); margin: 8px 0 0; line-height: 2; word-spacing: .15em; }
 
 /* ---------- side column ---------- */
 .side { display: grid; gap: 20px; }
@@ -272,7 +276,7 @@ audio { height: 36px; max-width: 100%; }
 .plan-list li:first-child .plan-item, .recent-list li:first-child .recent-item { border-top: 0; }
 .plan-item:hover .pi-name, .recent-item:hover .pi-name { color: var(--accent); }
 .pi-name { font-weight: 500; transition: color .12s; }
-.pi-ar { font-family: "Amiri", serif; font-size: 17px; color: var(--ink-2); direction: rtl; }
+.pi-ar { font-family: "Amiri", serif; font-size: 18px; line-height: 1.4; color: var(--ink-2); direction: rtl; }
 .pi-sub { grid-column: 1 / -1; font-size: 13px; color: var(--ink-3); }
 .pi-sub.weak { color: var(--wrong); }
 .plan-item.done .pi-name { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--rule-strong); }

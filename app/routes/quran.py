@@ -1,4 +1,5 @@
-"""The Quran text is public and never changes, so these routes need no login and are cacheable."""
+"""The Quran text is public and never changes, so these routes need no login and are cacheable.
+Text is served in Uthmani script, the script of the printed mushaf."""
 from fastapi import APIRouter, HTTPException, Path, Response
 
 from app.db import connection
@@ -19,7 +20,8 @@ def list_surahs(response: Response):
 def get_surah(response: Response, number: int = Path(ge=1, le=114)):
     with connection() as conn:
         surah = conn.execute("SELECT * FROM surahs WHERE number = %s", (number,)).fetchone()
-        rows = conn.execute("SELECT ayah, text FROM ayahs WHERE surah = %s ORDER BY ayah", (number,)).fetchall()
+        rows = conn.execute("SELECT ayah, coalesce(text_uthmani, text) AS text FROM ayahs WHERE surah = %s ORDER BY ayah",
+                            (number,)).fetchall()
     if surah is None:
         raise HTTPException(404, f"Surah {number} not found")
     basmala, ayahs = None, []

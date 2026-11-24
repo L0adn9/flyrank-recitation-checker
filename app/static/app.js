@@ -180,8 +180,19 @@ async function setPassage(p, { keepResult = false } = {}) {
   await renderText();
 }
 
+const HAS_LETTER = /[\u0621-\u064A\u0671]/;
+
+/** Mushaf words with their signs kept on them (same rule as the server's display_tokens). */
 function wordsFromText(text, ayah) {
-  return text.split(/\s+/).filter(Boolean).map((t) => ({ text: t, ayah, status: null }));
+  const out = [];
+  let lead = "";
+  for (const t of text.split(/\s+/).filter(Boolean)) {
+    if (HAS_LETTER.test(t)) { out.push(lead + t); lead = ""; }
+    else if (out.length && t[0] >= "\u06D6" && t[0] <= "\u06DC") out[out.length - 1] += t;
+    else if (out.length && t !== "۞") out[out.length - 1] += " " + t;
+    else lead += t + " ";
+  }
+  return out.map((t) => ({ text: t, ayah, status: null }));
 }
 
 /** Render the passage, optionally with a result's marks on it. */
@@ -207,18 +218,33 @@ async function renderText() {
     return `<span class="extra ${cls}" title="${label}">${e.kind === "extra" ? "+ " : ""}${esc(e.words.join(" "))}</span>`;
   }).join(" ");
 
-  const parts = [extraHTML(-1)];
+  // The mushaf writes some phrases as one word (يا قوم -> يَـٰقَوْمِ). Such words arrive as one word with
+  // text and the rest with text "": show them as one, marked with the most serious status among them.
+  const rank = { wrong: 3, moved: 2, missed: 1 };
+  const units = [];
   words.forEach((w, i) => {
-    const titles = { wrong: `Wrong: you said “${w.heard}”`, missed: "Missed", moved: "Out of order" };
-    let html = esc(w.text);
-    if (w.status === "wrong") html = `<ruby>${html}<rt>${esc(w.heard)}</rt></ruby>`;
-    const cls = w.status && w.status !== "correct" ? ` ${w.status}` : "";
-    const title = titles[w.status] ? ` title="${esc(titles[w.status])}"` : "";
-    parts.push(`<span class="w${cls}"${title}>${html}</span>`);
     const idx = w.i ?? i;
-    if (extrasAt.has(idx)) parts.push(extraHTML(idx));
-    const next = words[i + 1];
-    if (!next || next.ayah !== w.ayah) parts.push(`<span class="end" aria-label="end of ayah ${w.ayah}">۝${arNum(w.ayah)}</span>`);
+    const last = units[units.length - 1];
+    if (w.text === "" && last) {
+      if ((rank[w.status] || 0) > (rank[last.status] || 0)) last.status = w.status;
+      if (w.heard) last.heard = [last.heard, w.heard].filter(Boolean).join(" ");
+      last.idx = idx;
+      return;
+    }
+    units.push({ ...w, idx });
+  });
+
+  const titles = { wrong: (u) => `Wrong: you said “${u.heard}”`, missed: () => "Missed", moved: () => "Out of order" };
+  const parts = [extraHTML(-1)];
+  units.forEach((u, k) => {
+    let html = esc(u.text);
+    if (u.status === "wrong") html = `<ruby>${html}<rt>${esc(u.heard)}</rt></ruby>`;
+    const cls = u.status && u.status !== "correct" ? ` ${u.status}` : "";
+    const title = titles[u.status] ? ` title="${esc(titles[u.status](u))}"` : "";
+    parts.push(`<span class="w${cls}"${title}>${html}</span>`);
+    if (extrasAt.has(u.idx)) parts.push(extraHTML(u.idx));
+    const next = units[k + 1];
+    if (!next || next.ayah !== u.ayah) parts.push(`<span class="end" aria-label="end of ayah ${u.ayah}">\u06DD${arNum(u.ayah)}</span>`);
   });
 
   const meta = state.surahs[surah - 1];

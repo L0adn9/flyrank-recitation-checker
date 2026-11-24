@@ -16,10 +16,10 @@ from app.transcriber import Transcript, get_transcriber
 
 def expected_for(conn, surah: int, ayah_from: int, ayah_to: int) -> list[quran.Word]:
     rows = conn.execute(
-        "SELECT ayah, text FROM ayahs WHERE surah = %s AND ayah BETWEEN %s AND %s ORDER BY ayah",
+        "SELECT ayah, text, text_uthmani FROM ayahs WHERE surah = %s AND ayah BETWEEN %s AND %s ORDER BY ayah",
         (surah, ayah_from, ayah_to),
     ).fetchall()
-    return quran.expected_words(surah, [(r["ayah"], r["text"]) for r in rows])
+    return quran.expected_words(surah, [(r["ayah"], r["text"], r["text_uthmani"]) for r in rows])
 
 
 def cached_transcript(conn: Connection, sha256: str) -> Transcript | None:

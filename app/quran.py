@@ -1,17 +1,23 @@
-"""Quran text: loading the Tanzil file, Arabic normalisation, and the expected word list for a range.
+"""Quran text: loading the Tanzil files, Arabic normalisation, and the expected word list for a range.
 
-The Tanzil text is stored verbatim (its licence forbids changes). Everything here only *reads* it:
-the basmala that Tanzil prefixes to ayah 1 of most surahs is split off at read time, because it is
-recited before the surah, not checked as part of it.
+Two Tanzil editions are used, both stored verbatim (the licence forbids changes):
+- "simple" spelling is what recitations are compared against: its words map cleanly onto speech
+  recognition output once harakat are removed;
+- "Uthmani" script is what people see, because it is the script of the printed mushaf.
+The two split a few phrases differently (the mushaf writes "يا قوم" as one word, يَـٰقَوْمِ), so each
+simple word is mapped to the Uthmani word it is part of. The basmala that Tanzil prefixes to ayah 1 of
+most surahs is split off at read time, because it is recited before the surah, not checked as part of it.
 """
 import json
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from app.config import ROOT
 
 TEXT_FILE = ROOT / "data" / "quran-simple.txt"
+UTHMANI_FILE = ROOT / "data" / "quran-uthmani.txt"
 SURAHS_FILE = ROOT / "data" / "surahs.json"
 
 # Harakat, Quranic annotation signs, superscript alef, tatweel, BOM.
@@ -38,8 +44,8 @@ def norm_words(text: str) -> list[str]:
 class Word:
     i: int          # position in the expected sequence
     ayah: int
-    text: str       # as written in the mushaf text, with harakat
-    norm: str       # comparison form
+    text: str       # as shown, in Uthmani script ('' when written joined to the word before)
+    norm: str       # comparison form, from the simple spelling
 
 
 def split_basmala(surah: int, ayah: int, text: str) -> tuple[str | None, str]:
@@ -52,15 +58,62 @@ def split_basmala(surah: int, ayah: int, text: str) -> tuple[str | None, str]:
     return None, text
 
 
-def expected_words(surah: int, ayahs: list[tuple[int, str]]) -> list[Word]:
-    """[(ayah, text), ...] -> the words a reciter is expected to say, in order."""
+def display_for(simple: list[str], uthmani: list[str]) -> list[str]:
+    """The Uthmani word to show for each simple-spelling word. Where the mushaf joins several simple
+    words into one (يا قوم -> يَـٰقَوْمِ), the first gets the Uthmani word and the rest get ''.
+    Where the counts differ, each Uthmani word takes the 1-3 simple words it resembles most."""
+    if len(simple) == len(uthmani):
+        return list(uthmani)
+    out, i, j = [], 0, 0
+    while i < len(simple):
+        if j >= len(uthmani):
+            out.append(simple[i])
+            i += 1
+            continue
+        extra = (len(simple) - i) - (len(uthmani) - j)
+        target = norm_word(uthmani[j])
+        best_k, best = 1, -1.0
+        for k in range(1, min(3, extra + 1) + 1):
+            r = SequenceMatcher(a="".join(norm_word(t) for t in simple[i:i + k]), b=target).ratio()
+            if r > best + 0.05:
+                best_k, best = k, r
+        out += [uthmani[j]] + [""] * (best_k - 1)
+        i += best_k
+        j += 1
+    return out
+
+
+def _tokens(text: str) -> list[str]:
+    return [t for t in text.split() if norm_word(t)]  # drops standalone marks such as ۞ and ۩
+
+
+def display_tokens(text: str) -> list[str]:
+    """Mushaf words with their signs kept on them: a pause mark (ۚ ۖ ...) sits on the word before it,
+    a sajdah sign follows its word, and a hizb sign (۞) leads the word after it."""
+    out: list[str] = []
+    lead = ""
+    for t in text.split():
+        if norm_word(t):
+            out.append(lead + t)
+            lead = ""
+        elif out and "\u06d6" <= t[0] <= "\u06dc":
+            out[-1] += t
+        elif out and t != "۞":
+            out[-1] += " " + t
+        else:
+            lead += t + " "
+    return out
+
+
+def expected_words(surah: int, ayahs: list[tuple]) -> list[Word]:
+    """[(ayah, simple_text[, uthmani_text]), ...] -> the words a reciter is expected to say, in order."""
     words: list[Word] = []
-    for ayah, text in ayahs:
-        _, body = split_basmala(surah, ayah, text)
-        for token in body.split():
-            n = norm_word(token)
-            if n:  # skips standalone marks such as ۞ and ۩
-                words.append(Word(len(words), ayah, token, n))
+    for ayah, simple, *rest in ayahs:
+        tokens = _tokens(split_basmala(surah, ayah, simple)[1])
+        uthmani = rest[0] if rest and rest[0] else None
+        shown = display_for(tokens, display_tokens(split_basmala(surah, ayah, uthmani)[1])) if uthmani else tokens
+        for token, display in zip(tokens, shown):
+            words.append(Word(len(words), ayah, display, norm_word(token)))
     return words
 
 
