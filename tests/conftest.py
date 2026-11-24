@@ -13,9 +13,9 @@ SERVER = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhos
 BASE = SERVER + "/postgres"
 os.environ["DATABASE_URL"] = SERVER + "/recite_test"
 os.environ["JWT_SECRET"] = "test-secret-" + "x" * 40
-os.environ.setdefault("STORAGE_DIR", "/tmp/recite-test-storage")
+os.environ["STORAGE_DIR"] = "/tmp/recite-test-storage"  # never the real storage
 
-TABLES = "cron_runs, revision_plans, ayah_progress, jobs, transcripts, attempts, users"
+TABLES = "reports, cron_runs, revision_plans, ayah_progress, jobs, transcripts, attempts, users"
 
 
 def _ensure_database():

@@ -15,6 +15,7 @@ from app.audio import AudioError
 from app.checker import check_attempt, fail_attempt
 from app.config import settings
 from app.db import close_pool, connection, migrate
+from app.report import build_report
 
 log = logging.getLogger("worker")
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
@@ -32,8 +33,18 @@ def _check_attempt_failed(payload: dict, error: str) -> None:
                  else "Speech recognition failed. Please try again later.")
 
 
-HANDLERS = {"check_attempt": _check_attempt}
-ON_FAILURE = {"check_attempt": _check_attempt_failed}
+def _report_failed(payload: dict, error: str) -> None:
+    with connection() as conn:
+        conn.execute("UPDATE reports SET status = 'failed', error = 'Could not build the PDF. Please try again.',"
+                     " finished_at = now() WHERE id = %s", (payload["report_id"],))
+        conn.commit()
+
+
+HANDLERS = {
+    "check_attempt": _check_attempt,
+    "build_report": lambda payload: build_report(payload["report_id"]),
+}
+ON_FAILURE = {"check_attempt": _check_attempt_failed, "build_report": _report_failed}
 
 
 def run_one() -> bool:
