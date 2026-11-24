@@ -45,14 +45,29 @@ def gather(conn: Connection, user: dict, days: int) -> dict:
               "accuracy": (sum(v) / len(v)) if (v := per_day.get(start + timedelta(days=i))) else None}
              for i in range(days)]
 
+    # Mistakes by word, except that an ayah skipped or said out of order as a whole counts once,
+    # instead of flooding the list with every one of its words.
+    whole = {"missed": "ayah skipped", "moved": "ayah out of order"}
     missed: Counter = Counter()
     kinds: dict[tuple, Counter] = defaultdict(Counter)
     for a in attempts:
+        by_ayah: dict[int, list[dict]] = defaultdict(list)
         for w in a["result"]["words"]:
-            if w["status"] != "correct":
-                key = (a["surah"], a["surah_name"], w["ayah"], w["text"])
+            by_ayah[w["ayah"]].append(w)
+        for ayah, ws in by_ayah.items():
+            visible = [w for w in ws if w["text"]]
+            status = ws[0]["status"]
+            if len(ws) > 1 and status in whole and all(w["status"] == status for w in ws):
+                preview = " ".join(w["text"] for w in visible[:3]) + (" …" if len(visible) > 3 else "")
+                key = (a["surah"], a["surah_name"], ayah, preview)
                 missed[key] += 1
-                kinds[key][w["status"]] += 1
+                kinds[key][whole[status]] += 1
+                continue
+            for w in ws:
+                if w["status"] != "correct" and w["text"]:
+                    key = (a["surah"], a["surah_name"], w["ayah"], w["text"])
+                    missed[key] += 1
+                    kinds[key][w["status"]] += 1
     top_missed = [{"surah": k[0], "surah_name": k[1], "ayah": k[2], "text": k[3], "count": n,
                    "how": ", ".join(f"{s} ×{c}" if c > 1 else s for s, c in kinds[k].most_common())}
                   for k, n in missed.most_common(10)]
