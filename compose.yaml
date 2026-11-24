@@ -1,3 +1,20 @@
+# docker compose up --build   ->   http://localhost:8000
+x-app: &app
+  build: .
+  image: recite
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/recite
+    WHISPER_CLI: whisper-cli
+    WHISPER_MODEL: /app/models/ggml-tarteel-base-q8_0.bin
+    STORAGE_DIR: /app/storage
+  volumes:
+    - storage:/app/storage
+  depends_on:
+    db:
+      condition: service_healthy
+  restart: unless-stopped
+
 services:
   db:
     image: postgres:17
@@ -14,5 +31,26 @@ services:
       timeout: 3s
       retries: 20
 
+  # The API. On start it applies migrations, loads the Quran text and seeds the demo account (once).
+  api:
+    <<: *app
+    command: sh -c "python -m app.seed && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # The worker: speech recognition, PDF reports and the daily revision-plan cron.
+  worker:
+    <<: *app
+    command: python -m app.worker
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  storage:
