@@ -7,8 +7,9 @@ estimated from the audio so far; when a phrase ends, it is checked once more for
 threshold known by then, which matters in the first seconds.
 
 - While a phrase is being said, the fast model looks at it every few hundred milliseconds, and the words
-  up to where it has the reciter are shown as said, so they appear in step with the voice. These quick
-  looks never mark a word wrong: that is decided when the reciter pauses.
+  it heard said, up to where it has the reciter, are shown, so they appear in step with the voice. Words
+  it thinks were skipped stay hidden. These quick looks never mark a word wrong: that is decided when
+  the reciter pauses.
 - When the reciter pauses, the phrase is closed and decided: both models, the better fit kept
   (app/transcriber.py, WhisperCpp.decide). Only this final text marks words wrong or missed, and it never
   changes again, so marks do not flicker. The two run side by side, so the words of the next phrase
@@ -230,10 +231,12 @@ class LiveSession:
             # Follow the reciter: the words up to where the quick look has them shown as said. Whether each
             # was right is decided when they pause (then a wrong one turns red). Garbled audio does not
             # move this on: to the aligner, words that do not resemble the passage are extras, not progress.
-            reached = align(self.expected[at:], quick, prefix=True)["reached"]
-            for w in words[at: at + reached + 1]:
-                w["status"] = "correct"
-            at += reached + 1
+            ahead = align(self.expected[at:], quick, prefix=True)
+            for w, q in zip(words[at: at + ahead["reached"] + 1], ahead["words"]):
+                if q["status"] in ("correct", "wrong"):   # said (maybe misheard): show it now
+                    w["status"] = "correct"
+                # skipped or out of order: stays open until the phrase is decided, never shown as said
+            at += ahead["reached"] + 1
         if at < len(words) and any(not p.final for p in self.phrases):
             words[at]["status"] = "current"
         return {

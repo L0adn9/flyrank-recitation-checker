@@ -202,3 +202,18 @@ def test_a_quiet_noise_is_not_a_phrase():
     from app.audio import speech_spans
     lv = [-100.0] * 20 + [-18.0] * 150 + [-100.0] * 40 + [-45.0] * 20 + [-100.0] * 40
     assert len(speech_spans(lv)) == 1
+
+
+def test_a_skipped_ayah_is_never_shown_as_said():
+    async def go():
+        async def notify(m):
+            pass
+        s = LiveSession(EXP, FakeTranscriber(), notify)
+        s.feed(quiet(0.5) + tone(1.0))
+        s.phrases[0].partial = " ".join(AYAH[1] + AYAH[2] + AYAH[4])   # ayah 3 skipped, still reciting
+        return s.progress()
+
+    p = asyncio.run(go())
+    ayah3 = [w["status"] for w, e in zip(p["words"], EXP) if e.ayah == 3]
+    assert "correct" not in ayah3
+    assert p["next"] > max(e.i for e in EXP if e.ayah == 3)   # the place still moves on to ayah 4
