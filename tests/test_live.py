@@ -79,7 +79,8 @@ def test_the_word_being_said_is_not_called_wrong_yet():
 
     p = asyncio.run(go())
     st = [w["status"] for w in p["words"]]
-    assert st[:3] == ["correct"] * 3 and st[3] == "current" and p["next"] == 3
+    assert "wrong" not in st                       # never judged before the pause
+    assert st[:4] == ["correct"] * 4 and st[4] == "current" and p["next"] == 4   # shown where they are
 
 
 def test_skipped_ayah_does_not_end_the_check_early():

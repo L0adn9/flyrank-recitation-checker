@@ -6,9 +6,9 @@ as uploaded recordings (app/audio.py). It can only look backwards, so the loudne
 estimated from the audio so far; when a phrase ends, it is checked once more for pauses with the
 threshold known by then, which matters in the first seconds.
 
-- While a phrase is being said, the fast model looks at it every few hundred milliseconds, so the
-  words light up as they are said. These quick looks only ever confirm words: the words they heard that
-  match the passage, in order from where the reciter is, are shown as said; anything else waits.
+- While a phrase is being said, the fast model looks at it every few hundred milliseconds, and the words
+  up to where it has the reciter are shown as said, so they appear in step with the voice. These quick
+  looks never mark a word wrong: that is decided when the reciter pauses.
 - When the reciter pauses, the phrase is closed and decided: both models, the better fit kept
   (app/transcriber.py, WhisperCpp.decide). Only this final text marks words wrong or missed, and it never
   changes again, so marks do not flicker. The two run side by side, so the words of the next phrase
@@ -227,13 +227,13 @@ class LiveSession:
         at = r["reached"] + 1
         quick = quran.norm_words(" ".join(p.partial for p in self.phrases if not p.final and p.partial))
         if quick and at < len(self.expected):
-            # Confirm the words heard in order from where the reciter is; stop at the first that differs.
-            ahead = align(self.expected[at:], quick, prefix=True)["words"]
-            for w in ahead:
-                if w["status"] != "correct":
-                    break
-                words[at]["status"] = "correct"
-                at += 1
+            # Follow the reciter: the words up to where the quick look has them shown as said. Whether each
+            # was right is decided when they pause (then a wrong one turns red). Garbled audio does not
+            # move this on: to the aligner, words that do not resemble the passage are extras, not progress.
+            reached = align(self.expected[at:], quick, prefix=True)["reached"]
+            for w in words[at: at + reached + 1]:
+                w["status"] = "correct"
+            at += reached + 1
         if at < len(words) and any(not p.final for p in self.phrases):
             words[at]["status"] = "current"
         return {
