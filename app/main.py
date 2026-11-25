@@ -43,6 +43,17 @@ app.include_router(reports.router)
 app.include_router(live.router)
 
 
+@app.middleware("http")
+async def fresh_page_code(request: Request, call_next):
+    """The page's own code and style are always revalidated (a quick 304 when unchanged), so a browser
+    never keeps running an old version after an update. Fonts may be cached."""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/") and not path.startswith("/static/fonts/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.exception_handler(HTTPException)
 async def http_error(_: Request, exc: HTTPException):
     return JSONResponse({"error": exc.detail}, status_code=exc.status_code, headers=exc.headers)
