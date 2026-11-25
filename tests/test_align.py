@@ -244,3 +244,30 @@ def test_aligning_part_of_a_passage():
     r = align(rest, AYAH[3] + AYAH[2] + AYAH[4], prefix=True)
     st = [w["status"] for w in r["words"]]
     assert st[:5] == ["correct"] * 5 and st[5:9] == ["moved"] * 4   # ayah 2 said, ayah 3 out of order
+
+
+def test_aligner_survives_anything():
+    """Random recitations made of the passage's words with repeats, restarts, noise and skips, aligned
+    in full and live (prefix) mode, against the whole passage and against parts of it. Never a crash,
+    and every expected word gets exactly one status."""
+    import random
+    rnd = random.Random(7)
+    words = [w for n in range(1, 6) for w in AYAH[n]]
+    noise = ["قل", "والمومنين", "غ", "الله", "من"]
+    for _ in range(2000):
+        heard, i = [], 0
+        while i < len(words) and len(heard) < 60:
+            r = rnd.random()
+            if r < 0.1:
+                i = max(0, i - rnd.randint(1, 6))          # go back
+            elif r < 0.15:
+                heard.append(rnd.choice(noise))
+            elif r < 0.2:
+                i += rnd.randint(1, 4)                     # skip
+            else:
+                heard.append(words[i]); i += 1
+        start = rnd.randint(0, 10)
+        for exp in (EXP, EXP[start:]):
+            for prefix in (False, True):
+                r = align(exp, heard, prefix=prefix)
+                assert len(r["words"]) == len(exp)

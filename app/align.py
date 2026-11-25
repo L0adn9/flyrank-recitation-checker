@@ -296,6 +296,7 @@ def align(expected: list[Word], heard: list[str], prefix: bool = False) -> dict:
         del e["_keys"]
 
     for pos, js in restarts:
+        pos = min(pos, len(after_of) - 1)   # a later restart may have shortened what was kept
         extras.append({"after": after_of[pos] if pos >= 0 else -1, "words": [heard[j] for j in js], "kind": "repeat"})
     extras.sort(key=lambda e: e["after"])
 

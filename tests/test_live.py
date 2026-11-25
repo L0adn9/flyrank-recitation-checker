@@ -88,7 +88,7 @@ def test_skipped_ayah_does_not_end_the_check_early():
     assert {"type": "complete"} not in msgs
 
 
-def test_final_phrases_match_how_an_upload_is_cut():
+def test_the_result_is_made_from_the_live_phrases():
     s, _, fake = asyncio.run(run_session(recitation(), PHRASES))
     assert asyncio.run(s.final_phrases()) == PHRASES and s.redone == 0
 

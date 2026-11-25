@@ -18,9 +18,8 @@ After every pass the client gets each word's status: correct / wrong / missed / 
 texts (aligned with the start of the passage, align prefix=True), then the words just confirmed by the
 quick look, 'current' for the word being said, 'pending' for the rest.
 
-On stop, the stored result is made the same way as for an upload of the same audio: the recording is
-cut with the whole recording's threshold, live phrases that were cut the same way are reused, and only
-the others are recognised again (usually none, so the result is there right away).
+On stop, the result is made from the live phrases, plus any speech the live pause detection missed and
+the whole recording shows (final_phrases), so it is there about as soon as the last phrase is decided.
 """
 import asyncio
 import logging
@@ -258,21 +257,23 @@ class LiveSession:
         return not any(all(s == "missed" for s in st) for st in by_ayah.values())
 
     async def final_phrases(self) -> list[str]:
-        """The phrase texts for the stored result, cut exactly as an upload of this audio would be. Live
-        phrases cut the same way are reused; the others are recognised again, in order, with context."""
+        """The phrase texts for the stored result: the live phrases, plus any speech they missed. With the
+        whole recording known, pause detection can find speech the live threshold passed over (a basmala
+        said much softer than the rest); stretches no live phrase covers are recognised now. Phrases that
+        were only cut a little differently are not redone: measured, that changed no result and made
+        people wait several seconds after their last word."""
         if not self.levels or not any(p.final for p in self.phrases):
             return []
-        live = [(p.start // FRAME, p.end // FRAME, p.text) for p in self.phrases if p.final]
-        spans = [(round(a / FRAME_SECONDS), round(b / FRAME_SECONDS)) for a, b in speech_spans(self.levels)]
-        texts: list[str] = []
-        for fa, fb in spans:
-            text = next((t for la, lb, t in live if abs(la - fa) <= 5 and abs(lb - fb) <= 5), None)
-            if text is None:
-                t0 = time.monotonic()
-                heard = quran.norm_words(" ".join(texts))
-                text = await self.transcriber.decide(self._audio(fa * FRAME, fb * FRAME), self.expected, heard)
-                self.decode_seconds += time.monotonic() - t0
-                self.redone += 1
-            if text:
-                texts.append(text)
-        return texts
+        pieces = [(p.start // FRAME, p.end // FRAME, p.text) for p in self.phrases if p.final]
+        for a, b in speech_spans(self.levels):
+            fa, fb = round(a / FRAME_SECONDS), round(b / FRAME_SECONDS)
+            if any(min(fb, lb) - max(fa, la) > 0 for la, lb, _ in pieces):
+                continue
+            before = [t for la, _, t in sorted(pieces) if la < fa]
+            t0 = time.monotonic()
+            text = await self.transcriber.decide(self._audio(fa * FRAME, fb * FRAME), self.expected,
+                                                 quran.norm_words(" ".join(before)))
+            self.decode_seconds += time.monotonic() - t0
+            self.redone += 1
+            pieces.append((fa, fb, text))
+        return [t for _, _, t in sorted(pieces) if t]
