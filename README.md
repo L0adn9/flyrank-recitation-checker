@@ -6,7 +6,7 @@ Recite checks a Quran recitation word by word, while you recite. Press the butto
 
 FlyRank internship, Backend AI Engineering track, capstone *Your 10x Solution*. The overview document is [My 10x Solution - Muhammad Abdullah.md](My%2010x%20Solution%20-%20Muhammad%20Abdullah.md).
 
-![A checked recitation of Al-Fil: ayah 3 was said wrong, and what was heard is written above each wrong word](docs/result.png)
+<img src="docs/result.png" width="720" alt="A checked recitation of Al-Fil: ayah 3 was replaced by another ayah, so its words are highlighted in red, and what was heard instead is listed under the passage">
 
 ## The problem, and the 10x
 
