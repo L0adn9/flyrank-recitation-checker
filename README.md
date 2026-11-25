@@ -6,7 +6,7 @@ Recite checks a Quran recitation word by word, while you recite. Press the butto
 
 FlyRank internship, Backend AI Engineering track, capstone *Your 10x Solution*. The overview document is [My 10x Solution - Muhammad Abdullah.md](My%2010x%20Solution%20-%20Muhammad%20Abdullah.md).
 
-<img src="docs/result.png" width="720" alt="A checked recitation of Al-Fil: ayah 3 was replaced by another ayah, so its words are highlighted in red, and what was heard instead is listed under the passage">
+<img src="docs/result-2026-11-25.png" width="720" alt="A checked recitation of Al-Fil: ayah 3 was replaced by another ayah, so its words are highlighted in red, and what was heard instead is listed under the passage">
 
 ## The problem, and the 10x
 
@@ -48,7 +48,7 @@ python3 scripts/make_samples.py     # writes samples/<reciter>/*.wav, 10 reciter
 
 | Reciting from memory: the words appear as they are said; ayah 3 was skipped, so it stays open | Reciting on a phone | Dark mode | The PDF report ([sample](docs/report.pdf)) |
 |---|---|---|---|
-| <img src="docs/live.png" width="420" alt="Live check of Al-Fil from memory: ayahs 1 and 2 have appeared as recited; ayah 3 was skipped and stays hidden, with a caret where it would go"> | <img src="docs/phone-live.png" width="200" alt="Live check on a phone with the text visible: the word being recited is highlighted"> | <img src="docs/result-dark.png" width="360" alt="A checked recitation in dark mode"> | <img src="docs/report.png" width="260" alt="Progress report: accuracy per day, most-missed words"> |
+| <img src="docs/live-2026-11-25.png" width="420" alt="Live check of Al-Fil from memory: ayahs 1 and 2 have appeared as recited; ayah 3 was skipped and stays hidden, with a caret where it would go"> | <img src="docs/phone-live-2026-11-25.png" width="200" alt="Live check on a phone with the text visible: the word being recited is highlighted"> | <img src="docs/result-dark-2026-11-25.png" width="360" alt="A checked recitation in dark mode"> | <img src="docs/report.png" width="260" alt="Progress report: accuracy per day, most-missed words"> |
 
 ## Concepts
 
