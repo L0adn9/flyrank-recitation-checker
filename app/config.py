@@ -25,6 +25,10 @@ class Settings:
     whisper_model: Path = _path(os.getenv("WHISPER_MODEL", "models/ggml-tarbiyah-small-q8_0.bin"))
     whisper_fast_model: Path = _path(os.getenv("WHISPER_FAST_MODEL", "models/ggml-tarteel-base-q8_0.bin"))
     whisper_threads: int = int(os.getenv("WHISPER_THREADS") or min(8, os.cpu_count() or 4))
+    # whisper-server binary, for a GPU build. When set, live checking keeps both models loaded in resident
+    # servers (about 0.4 s for both on a laptop GPU, instead of 1.5 s on the CPU) and judges every word as it
+    # is said. Empty: one whisper-cli run per phrase; words are followed live and judged at each pause.
+    whisper_server: str = os.getenv("WHISPER_SERVER", "")
     storage_dir: Path = _path(os.getenv("STORAGE_DIR", "storage"))
     revision_cron: str = os.getenv("REVISION_CRON", "0 5 * * *")
     timezone: str = os.getenv("TZ", "UTC") or "UTC"

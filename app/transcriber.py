@@ -12,11 +12,17 @@ both, so picking the better fit removes each model's misreadings without hiding 
 fast model alone follows along inside the phrase being said, and never marks a word wrong.
 """
 import asyncio
+import atexit
+import io
 import math
 import os
+import socket
 import subprocess
 import tempfile
+import threading
 import time
+import urllib.request
+import uuid
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -76,6 +82,76 @@ def _slots(threads: int, quick: bool) -> asyncio.Semaphore:
     return _slots_quick if quick else _slots_full
 
 
+def wav_bytes(pcm: bytes) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+class _Server:
+    """A whisper-server process with one model loaded, started on first use. Saves loading the model for
+    every phrase, which is most of the time for short phrases."""
+
+    def __init__(self, binary: str, model: Path, threads: int):
+        self.binary, self.model, self.threads = binary, model, threads
+        self.proc: subprocess.Popen | None = None
+        self.port = 0
+        self.lock = threading.Lock()   # one recognition at a time, as the server does anyway
+        self.work = 0.0                 # how long a recognition takes here, smoothed (waiting not counted)
+
+    def _start(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            return
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            self.port = sock.getsockname()[1]
+        try:
+            self.proc = subprocess.Popen(
+                [self.binary, "-m", str(self.model), "-l", "ar", "-t", str(self.threads), "--host", "127.0.0.1",
+                 "--port", str(self.port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            raise TranscriberError(f"whisper-server not found at '{self.binary}' (set WHISPER_SERVER)") from None
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                raise TranscriberError(f"whisper-server exited with {self.proc.returncode} loading {self.model.name}")
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{self.port}/", timeout=1).close()
+                return
+            except OSError:
+                time.sleep(0.2)
+        raise TranscriberError(f"whisper-server did not start for {self.model.name}")
+
+    def infer(self, wav: bytes, prompt: str) -> str:
+        self._start()
+        boundary = uuid.uuid4().hex
+        fields = {"response_format": "text", "language": "ar", "temperature": "0"}
+        if prompt:
+            fields["prompt"] = prompt
+        body = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+                        for k, v in fields.items())
+        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="phrase.wav"\r\n'
+                 f"Content-Type: audio/wav\r\n\r\n").encode() + wav + f"\r\n--{boundary}--\r\n".encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/inference", data=body,
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        with self.lock:
+            t0 = time.monotonic()
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    text = " ".join(r.read().decode().split())
+            except OSError as e:
+                raise TranscriberError(f"whisper-server failed: {e}") from None
+            took = time.monotonic() - t0
+            self.work = took if not self.work else 0.6 * self.work + 0.4 * took
+        return text
+
+    def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+
+
 class WhisperCpp:
     def __init__(self, cli: str | None = None, model: Path | None = None, fast_model: Path | None = None,
                  threads: int | None = None):
@@ -84,6 +160,22 @@ class WhisperCpp:
         self.fast_model = fast_model or settings.whisper_fast_model
         self.threads = threads or settings.whisper_threads
         self.name = f"whisper.cpp/{self.model.name}+{self.fast_model.name}"
+        self.servers: dict[Path, _Server] = {}
+        if settings.whisper_server:
+            self.servers = {m: _Server(settings.whisper_server, m, self.threads) for m in (self.model, self.fast_model)}
+            atexit.register(self.close)
+
+    def close(self) -> None:
+        for server in self.servers.values():
+            server.stop()
+
+    def warm(self) -> None:
+        """Start the resident servers now and run each once (loading the models and, on a GPU, compiling
+        its shaders takes seconds), so the first phrase is as quick as the rest."""
+        for server in self.servers.values():
+            if server.proc is None or server.proc.poll() is not None:
+                server._start()
+                server.infer(wav_bytes(b"\0\0" * 16000), "")
 
     def _args(self, wav: Path, model: Path, prompt: str = "", quick: float | None = None) -> list[str]:
         if not model.exists():
@@ -133,6 +225,10 @@ class WhisperCpp:
         return Transcript(" ".join(segments), segments, time.monotonic() - t0)
 
     async def _arun(self, pcm: bytes, model: Path, prompt: str = "", quick: bool = False) -> str:
+        if model in self.servers:
+            if not model.exists():
+                raise TranscriberError(f"model file missing: {model} (run scripts/get_model.sh)")
+            return await asyncio.to_thread(self.servers[model].infer, wav_bytes(pcm), prompt)
         async with _slots(self.threads, quick):
             with tempfile.TemporaryDirectory() as td:
                 wav = Path(td) / "phrase.wav"
@@ -156,12 +252,34 @@ class WhisperCpp:
             return await self._arun(pcm, self.fast_model, quick=True)
         return await self._arun(pcm, self.model, prompt)
 
-    async def decide(self, pcm: bytes, expected: list[Word], heard: list[str]) -> str:
+    async def look(self, pcm: bytes, expected: list[Word], heard: list[str]) -> str:
+        """A quick look at the phrase being said. With resident servers (a GPU) this is a full decision, so the
+        words are judged as they are said; otherwise the fast model alone, which only follows along."""
+        if self.judges_while_reciting:
+            return await self.decide(pcm, expected, heard, keep=False)
+        return await self.decode(pcm, partial=True)
+
+    @property
+    def look_seconds(self) -> float:
+        """How long a look with both models takes (they run side by side), queueing not counted."""
+        return max((srv.work for srv in self.servers.values()), default=0.0)
+
+    @property
+    def judges_while_reciting(self) -> bool:
+        """With resident servers (set WHISPER_SERVER only for a GPU build: there both models together take
+        about 0.4 s), every look is a full decision. Without them, looks are the fast model alone."""
+        return bool(self.servers)
+
+    async def decide(self, pcm: bytes, expected: list[Word], heard: list[str], keep: bool = True) -> str:
         """A finished phrase: both models, the passage as context for the accurate one; keep the better fit."""
         from app.align import best_fit, prompt_for
+        if self.servers:
+            await asyncio.to_thread(self.warm)   # loading time is not counted
         hyps = await asyncio.gather(self._arun(pcm, self.model, prompt_for(expected, heard)),
                                     self._arun(pcm, self.fast_model))
         text = best_fit(expected, heard, list(hyps), len(pcm) / 32000 - 0.3)
+        if not keep:   # a look at a phrase still being said: no phrase-level filtering yet
+            return text
         return text if keep_phrase(text, len(pcm) / 32000 - 0.3, heard, expected) else ""
 
 
@@ -194,8 +312,13 @@ class FakeTranscriber:
         self.finals += 1
         return text
 
-    async def decide(self, pcm: bytes, expected: list[Word], heard: list[str]) -> str:
+    async def decide(self, pcm: bytes, expected: list[Word], heard: list[str], keep: bool = True) -> str:
         return await self.decode(pcm)
+
+    async def look(self, pcm: bytes, expected: list[Word], heard: list[str]) -> str:
+        return await self.decode(pcm, partial=True)
+
+    judges_while_reciting = False
 
 
 _default: Transcriber | None = None

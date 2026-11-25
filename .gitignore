@@ -17,3 +17,4 @@ storage/
 # big or third-party binaries fetched by scripts
 models/*.bin
 samples/
+.tools/

@@ -51,8 +51,18 @@ async def stream(expected, wav: Path, asr, speed: float) -> tuple[dict, list[flo
                 lags.append(time.monotonic() - fed_at[covered])
             return text
 
-        async def decide(self, audio: bytes, expected, heard) -> str:
-            return await asr.decide(audio, expected, heard)
+        async def decide(self, audio: bytes, expected, heard, keep: bool = True) -> str:
+            return await asr.decide(audio, expected, heard, keep)
+
+        async def look(self, audio: bytes, expected, heard) -> str:
+            covered = session.samples
+            text = await asr.look(audio, expected, heard)
+            lags.append(time.monotonic() - fed_at[covered])
+            return text
+
+        @property
+        def judges_while_reciting(self) -> bool:
+            return asr.judges_while_reciting
 
     async def notify(msg: dict) -> None:
         nonlocal updates

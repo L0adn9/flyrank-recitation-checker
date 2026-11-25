@@ -21,8 +21,14 @@ async def lifespan(_: FastAPI):
     migrate()
     load_quran()
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
+    if settings.whisper_server:   # load the models into the resident servers before the first recitation
+        import threading
+        from app.transcriber import get_transcriber
+        threading.Thread(target=lambda: getattr(get_transcriber(), "warm", lambda: None)(), daemon=True).start()
     yield
     close_pool()
+    from app.transcriber import get_transcriber
+    getattr(get_transcriber(), "close", lambda: None)()
 
 
 logging.basicConfig(format="%(levelname)s:     %(name)s: %(message)s")

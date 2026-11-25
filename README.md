@@ -146,6 +146,8 @@ docker compose up -d db           # or use your own Postgres
 
 `python -m app.cron revision_plan` builds today's plans by hand.
 
+With a GPU, build whisper.cpp with `-DGGML_VULKAN=ON` (or CUDA/Metal) and point `WHISPER_CLI` at it: each check is about twice as fast. `WHISPER_SERVER` (resident models that judge every word while it is said) is experimental.
+
 ## Tests
 
 ```bash

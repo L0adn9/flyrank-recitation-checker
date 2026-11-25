@@ -6,10 +6,10 @@ as uploaded recordings (app/audio.py). It can only look backwards, so the loudne
 estimated from the audio so far; when a phrase ends, it is checked once more for pauses with the
 threshold known by then, which matters in the first seconds.
 
-- While a phrase is being said, the fast model looks at it every few hundred milliseconds, and the words
-  it heard said, up to where it has the reciter, are shown, so they appear in step with the voice. Words
-  it thinks were skipped stay hidden. These quick looks never mark a word wrong: that is decided when
-  the reciter pauses.
+- While a phrase is being said, it is looked at again and again, back to back (transcriber.look). With
+  the models resident and fast enough (a GPU), each look is a full decision by both models, and the
+  words are judged as they are said; on a slower machine the fast model alone follows along, and words
+  are judged when the reciter pauses. Either way the page only ever moves forward (progress).
 - When the reciter pauses, the phrase is closed and decided: both models, the better fit kept
   (app/transcriber.py, WhisperCpp.decide). Only this final text marks words wrong or missed, and it never
   changes again, so marks do not flicker. The two run side by side, so the words of the next phrase
@@ -47,7 +47,8 @@ MIN_SPEECH = 0.3            # shorter sounds are clicks or breaths, not words
 MIN_WORDS = 0.5             # live, phrases shorter than this are not sent to the models
 MAX_PHRASE = 24.0           # longer phrases are cut at their quietest moment
 PARTIAL_START = 0.5         # a phrase gets its first partial pass after this much audio
-PARTIAL_EVERY = 0.35        # and another one whenever this much new audio has arrived
+PARTIAL_EVERY = 0.2         # and another one whenever this much new audio has arrived (back to back,
+                            # in practice: a look takes about as long)
 PRIOR = [-60.0] * 15        # assumed quiet frames, so the first seconds are not judged on speech alone
 
 
@@ -77,6 +78,8 @@ class LiveSession:
         self.complete_sent = False
         self.decode_seconds = 0.0
         self.redone = 0                     # phrases recognised again on stop
+        self._shown: dict[int, dict] = {}   # what the page was last sent for each word it has shown
+        self._next = 0                      # the place the page was last sent (it never moves back)
         self._wake_final = asyncio.Event()
         self._wake_partial = asyncio.Event()
 
@@ -209,7 +212,7 @@ class LiveSession:
                 await self._wake_partial.wait()
                 continue
             upto = self.samples
-            p.partial = await self.transcriber.decode(self._audio(p.start, upto), partial=True)
+            p.partial = await self.transcriber.look(self._audio(p.start, upto), self.expected, self.heard())
             p.partial_at = upto
             if not p.final:
                 await self.notify(self.progress())
@@ -221,24 +224,51 @@ class LiveSession:
         return quran.clean_heard(quran.norm_words(text), self.expected)
 
     def progress(self) -> dict:
-        """Each expected word's status so far: correct / wrong / missed / moved from the final texts; then
-        the words the quick look confirmed (correct); 'current' for the word being said, 'pending' after."""
+        """Each expected word's status so far, from the decided phrases and the looks at the phrase being said.
+
+        When the looks are full decisions (both models, fast enough: transcriber.judges_while_reciting), the
+        words are judged as they are said: correct, wrong, missed. Only the word being said is held back
+        ('current'): it may be cut off mid-word. Otherwise the looks only follow along: words heard said are
+        shown, and right or wrong is decided when the reciter pauses.
+
+        The page never goes backwards: a word it has shown is not taken away and the place never moves
+        back, even when a later decision reads the audio differently (a shown word can still change mark)."""
         r = align(self.expected, self.heard(), prefix=True)
         words = r["words"]
         at = r["reached"] + 1
-        quick = quran.norm_words(" ".join(p.partial for p in self.phrases if not p.final and p.partial))
-        if quick and at < len(self.expected):
-            # Follow the reciter: the words up to where the quick look has them shown as said. Whether each
-            # was right is decided when they pause (then a wrong one turns red). Garbled audio does not
-            # move this on: to the aligner, words that do not resemble the passage are extras, not progress.
-            ahead = align(self.expected[at:], quick, prefix=True)
-            for w, q in zip(words[at: at + ahead["reached"] + 1], ahead["words"]):
-                if q["status"] in ("correct", "wrong"):   # said (maybe misheard): show it now
-                    w["status"] = "correct"
-                # skipped or out of order: stays open until the phrase is decided, never shown as said
-            at += ahead["reached"] + 1
+        looking = [p for p in self.phrases if not p.final and p.partial]
+        if looking and at < len(self.expected):
+            quick = quran.norm_words(" ".join(p.partial for p in looking))
+            if self.transcriber.judges_while_reciting:
+                finals = " ".join(p.text for p in self.phrases if p.final and p.text)
+                full = align(self.expected, quran.clean_heard(quran.norm_words(finals) + quick, self.expected),
+                             prefix=True)
+                last = full["reached"]
+                for k in range(at, last + 1):
+                    words[k] = full["words"][k]
+                if last >= at and words[last]["status"] == "wrong":
+                    words[last]["status"] = "current"   # still being said: may be cut off mid-word
+                at = max(at, last + 1 if words[last]["status"] != "current" else last)
+            else:
+                ahead = align(self.expected[at:], quick, prefix=True)
+                for w, q in zip(words[at: at + ahead["reached"] + 1], ahead["words"]):
+                    if q["status"] in ("correct", "wrong"):   # said (maybe misheard): show it now
+                        w["status"] = "correct"
+                    # skipped or out of order: stays open until the phrase is decided, never shown as said
+                at += ahead["reached"] + 1
+        # Never backwards.
+        for k, w in enumerate(words):
+            if w["status"] in ("pending", "current") and k in self._shown:
+                words[k] = dict(self._shown[k])
+        at = max(at, self._next)
+        while at < len(words) and at in self._shown:
+            at += 1
         if at < len(words) and any(not p.final for p in self.phrases):
             words[at]["status"] = "current"
+        self._next = at
+        for k, w in enumerate(words):
+            if w["status"] not in ("pending", "current"):
+                self._shown[k] = {"status": w["status"], **({"heard": w["heard"]} if "heard" in w else {})}
         return {
             "type": "progress",
             "words": [{"status": w["status"], **({"heard": w["heard"]} if "heard" in w else {})} for w in words],

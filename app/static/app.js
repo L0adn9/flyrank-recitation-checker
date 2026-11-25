@@ -254,7 +254,7 @@ async function renderText() {
       return;
     }
     let html = esc(u.text);
-    if (u.status === "wrong" && !live && u.heard) html = `<ruby>${html}<rt>${esc(u.heard)}</rt></ruby>`;
+    // What was heard instead is listed under the passage (#heard-instead), not squeezed above the word.
     let cls = u.status && u.status !== "correct" ? ` ${u.status}` : "";
     if (k === nextAt) cls += " next";
     if (live && !waiting) {
@@ -566,6 +566,7 @@ function clearResult() {
   $("#result-head").innerHTML = "";
   $("#legend").hidden = true;
   $("#heard").hidden = true;
+  $("#heard-instead").hidden = true;
   $("#result-actions").hidden = true;
   $("#steps").hidden = true;
   $("#recorder").hidden = false;
@@ -608,6 +609,11 @@ async function showResult(a) {
     <div class="ayah-dots" aria-label="Ayahs">${r.ayahs.map((x) =>
       `<span class="ayah-dot ${x.solid ? "solid" : "weak"}" title="Ayah ${x.ayah}: ${x.solid ? "solid" : `${plural(x.mistakes, "mistake")}${x.repeats ? `, went back ${x.repeats === 1 ? "once" : `${x.repeats} times`}` : ""}`}">${x.ayah}</span>`).join("")}</div>`;
   $("#legend").hidden = r.mistakes + r.repeats === 0;
+  const instead = r.words.filter((w) => w.status === "wrong" && w.heard && w.text);
+  const box = $("#heard-instead");
+  box.hidden = !instead.length;
+  box.innerHTML = instead.length ? `<span class="hi-label">Heard instead</span>` + instead.map((w) =>
+    `<span class="hi-pair" lang="ar"><span class="hi-exp">${esc(w.text)}</span><span class="hi-arrow" aria-label="heard as">←</span><span class="hi-got">${esc(w.heard)}</span></span>`).join("") : "";
   const heard = $("#heard");
   heard.hidden = !a.transcript;
   $("p", heard).textContent = a.transcript || "";
